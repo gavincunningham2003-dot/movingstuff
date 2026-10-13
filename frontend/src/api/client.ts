@@ -5,8 +5,10 @@ import type {
   HazardCatalogueOut,
   HazardLayerFeatureCollection,
   HealthResponse,
+  ModelVersionSummary,
   ModelsMetricsResponse,
   PagedProperties,
+  PointAssessmentOut,
   PortfolioAnalysisOut,
   PortfolioStatusOut,
   PortfolioSummaryOut,
@@ -117,10 +119,14 @@ export const api = {
   portfolioSummary: (signal?: AbortSignal) =>
     get<PortfolioSummaryOut>('/portfolio/summary', undefined, signal),
 
-  modelsMetrics: (signal?: AbortSignal) => get<ModelsMetricsResponse>('/models/metrics', undefined, signal),
+  modelsMetrics: (version?: string, signal?: AbortSignal) =>
+    get<ModelsMetricsResponse>('/models/metrics', version ? { version } : undefined, signal),
+  modelVersions: (signal?: AbortSignal) => get<ModelVersionSummary[]>('/models/versions', undefined, signal),
 
   hazardsCatalogue: (signal?: AbortSignal) => get<HazardCatalogueOut[]>('/hazards', undefined, signal),
 
+  pointAssessment: (lon: number, lat: number, signal?: AbortSignal) =>
+    get<PointAssessmentOut>('/hazards/point', { lon: lon.toFixed(6), lat: lat.toFixed(6) }, signal),
   hazardGeojson: (hazardId: string, bbox: string, zoom: number, signal?: AbortSignal) =>
     get<HazardLayerFeatureCollection>(
       `/hazards/${encodeURIComponent(hazardId)}/geojson`,

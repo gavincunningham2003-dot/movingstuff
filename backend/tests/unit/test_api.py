@@ -62,8 +62,9 @@ def test_bbox_guard_rails():
     assert parse_bbox("-122.5,37.5,-122.0,38.0") == (-122.5, 37.5, -122.0, 38.0)
     from fastapi import HTTPException
 
+    assert parse_bbox("-125,32,-114,42") == (-125.0, 32.0, -114.0, 42.0)  # whole state: allowed
     with pytest.raises(HTTPException):
-        parse_bbox("-125,32,-114,42")  # whole state: too large
+        parse_bbox("-130,20,-100,50")  # half a continent: too large
     with pytest.raises(HTTPException):
         parse_bbox("a,b,c,d")
 

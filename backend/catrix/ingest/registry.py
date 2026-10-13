@@ -33,6 +33,13 @@ class SourceSpec(BaseModel):
     verified_on: str | None = None
     verification_status: Literal["verified", "unverified", "local_only"]
     fields: list[str] = Field(default_factory=list)
+    # ArcGIS page size override for layers whose features are so large that the
+    # service's own maxRecordCount makes it time out (HTTP 500/504).
+    page_size: int | None = None
+    # Registered for provenance but without a connector yet (no ingestion expected).
+    planned: bool = False
+    # Another source now provides this signal; this entry is kept for the record.
+    superseded_by: str | None = None
     notes: str | None = None
 
     @property
@@ -120,4 +127,7 @@ def mark_failed(session: Session, source_id: str, error: str, *, unavailable: bo
         session.add(row)
     row.ingestion_status = "unavailable" if unavailable else "failed"
     row.error = error[:4000]
+    # retrieved_at is only set on success; record when this attempt failed so the data
+    # quality page can show it.
+    row.extra = {**(row.extra or {}), "failed_at": datetime.now(UTC).isoformat()}
     session.flush()

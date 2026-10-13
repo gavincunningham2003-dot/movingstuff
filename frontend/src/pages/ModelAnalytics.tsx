@@ -13,9 +13,10 @@ import {
   YAxis,
 } from 'recharts';
 
-import { useModelsMetrics } from '../api/hooks';
+import { useModelVersions, useModelsMetrics } from '../api/hooks';
 import type { GeographicPerformanceEntry, ModelMetricsOut } from '../api/types';
 import { AXIS_LINE, AXIS_TICK, CURSOR_FILL, GRID_STROKE, TOOLTIP_ITEM_STYLE, TOOLTIP_LABEL_STYLE, TOOLTIP_STYLE } from '../components/charts/chartTheme';
+import { OperatingPointPanel } from '../components/charts/OperatingPointPanel';
 import { PageBody } from '../components/layout/PageBody';
 import { Badge } from '../components/ui/Badge';
 import { Card } from '../components/ui/Card';
@@ -32,7 +33,6 @@ import { fmtDateTime, fmtFracPct, fmtInt, fmtNum, humanize, isNum } from '../lib
 import { COLORS, seriesColor } from '../lib/hazardColors';
 import {
   calibrationBins,
-  confusionCells,
   extraMetricKeys,
   featureImportance,
   geographicPerformance,
@@ -172,45 +172,6 @@ function CalibrationChart({ model }: { model: ModelMetricsOut }) {
   );
 }
 
-function ConfusionMatrix({ model }: { model: ModelMetricsOut }) {
-  const c = confusionCells(model);
-  if ([c.tp, c.fp, c.fn, c.tn].every((v) => v === null)) {
-    return <EmptyState compact title="No confusion matrix" message="The API returned no confusion counts for this model." />;
-  }
-  const precision = isNum(c.tp) && isNum(c.fp) && c.tp + c.fp > 0 ? c.tp / (c.tp + c.fp) : null;
-  const recall = isNum(c.tp) && isNum(c.fn) && c.tp + c.fn > 0 ? c.tp / (c.tp + c.fn) : null;
-  const specificity = isNum(c.tn) && isNum(c.fp) && c.tn + c.fp > 0 ? c.tn / (c.tn + c.fp) : null;
-
-  const cell = (label: string, v: number | null, tone: string) => (
-    <div className={`rounded-md border px-3 py-3 text-center ${tone}`}>
-      <div className="text-[11px] uppercase tracking-wide opacity-80">{label}</div>
-      <div className="tabular text-xl font-semibold">{fmtInt(v)}</div>
-    </div>
-  );
-
-  return (
-    <div>
-      <div className="grid grid-cols-[auto_1fr_1fr] gap-2 text-xs">
-        <div />
-        <div className="text-center text-slate-400">Predicted positive</div>
-        <div className="text-center text-slate-400">Predicted negative</div>
-        <div className="flex items-center text-slate-400">Actual positive</div>
-        {cell('True positive', c.tp, 'border-teal-500/40 bg-teal-500/10 text-teal-200')}
-        {cell('False negative', c.fn, 'border-red-500/40 bg-red-500/10 text-red-200')}
-        <div className="flex items-center text-slate-400">Actual negative</div>
-        {cell('False positive', c.fp, 'border-amber-500/40 bg-amber-500/10 text-amber-200')}
-        {cell('True negative', c.tn, 'border-slate-700 bg-slate-800/60 text-slate-200')}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-        <span>Threshold {fmtNum(model.threshold, 3)}</span>
-        <span>Precision {fmtFracPct(precision)}</span>
-        <span>Recall {fmtFracPct(recall)}</span>
-        <span>Specificity {fmtFracPct(specificity)}</span>
-      </div>
-    </div>
-  );
-}
-
 function HorizontalBars({
   data,
   dataKey,
@@ -253,8 +214,15 @@ const geoColumns: Column<GeographicPerformanceEntry>[] = [
 ];
 
 export function ModelAnalytics() {
-  const q = useModelsMetrics();
+  const [version, setVersion] = useState<string>('');
+  const versionsQ = useModelVersions();
+  const q = useModelsMetrics(version || undefined);
   const [inspectName, setInspectName] = useState<string>('');
+  const versions = versionsQ.data ?? [];
+  const versionLabel = (v: (typeof versions)[number]) =>
+    `${v.version}${v.is_latest ? ' (live)' : ''} · ${v.target === 'within_1km' ? 'within 1 km' : 'inside perimeter'}${
+      v.excluded_features.length ? ' · no lag cols' : ''
+    } · ${v.selected_model ?? '—'}`;
 
   const models = q.data?.models ?? [];
   const inspected =
@@ -331,18 +299,38 @@ export function ModelAnalytics() {
             : `${models.length} model${models.length === 1 ? '' : 's'} evaluated`
         }
         actions={
-          models.length > 1 ? (
-            <Field label="Inspect model">
-              <Select
-                value={inspected ? seriesName(inspected, models) : ''}
-                onChange={setInspectName}
-                options={models.map((m) => ({ value: seriesName(m, models), label: seriesName(m, models) }))}
-                className="w-56"
-              />
-            </Field>
-          ) : undefined
+          <div className="flex flex-wrap items-end gap-3">
+            {versions.length > 1 && (
+              <Field label="Training run">
+                <Select
+                  value={version || (versions.find((v) => v.is_latest)?.version ?? '')}
+                  onChange={setVersion}
+                  options={versions.map((v) => ({ value: v.version, label: versionLabel(v) }))}
+                  className="w-80"
+                />
+              </Field>
+            )}
+            {models.length > 1 && (
+              <Field label="Inspect model">
+                <Select
+                  value={inspected ? seriesName(inspected, models) : ''}
+                  onChange={setInspectName}
+                  options={models.map((m) => ({ value: seriesName(m, models), label: seriesName(m, models) }))}
+                  className="w-56"
+                />
+              </Field>
+            )}
+          </div>
         }
       />
+
+      {data.is_latest === false && (
+        <CaveatBanner tone="amber" title="Viewing a recorded training run that is not the live model" className="mb-4">
+          Run {data.version}: target "{data.target === 'within_1km' ? 'perimeter within 1 km' : 'inside perimeter'}"
+          {data.excluded_features?.length ? `, excluding ${data.excluded_features.join(', ')}` : ''}. The map, property
+          pages and portfolio scoring use the live run.
+        </CaveatBanner>
+      )}
 
       {!statusOk && (
         <CaveatBanner
@@ -403,8 +391,11 @@ export function ModelAnalytics() {
                 <Card title="Calibration (reliability)" subtitle={`${seriesName(inspected, models)} · dashed diagonal is perfect calibration`}>
                   <CalibrationChart model={inspected} />
                 </Card>
-                <Card title="Confusion matrix" subtitle={`${seriesName(inspected, models)} at threshold ${fmtNum(inspected.threshold, 3)} on the test period`}>
-                  <ConfusionMatrix model={inspected} />
+                <Card
+                  title="Confusion matrix at a chosen operating point"
+                  subtitle={`${seriesName(inspected, models)} · thresholds chosen on validation, counts on the held-out split`}
+                >
+                  <OperatingPointPanel model={inspected} />
                 </Card>
               </div>
 

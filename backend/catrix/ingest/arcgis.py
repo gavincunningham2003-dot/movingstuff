@@ -22,7 +22,7 @@ import pandas as pd
 from shapely.geometry import shape
 
 from catrix.config import GEOGRAPHIC_CRS
-from catrix.ingest.http import SourceUnavailableError, get_json
+from catrix.ingest.http import SourceUnavailableError, get_json, post_json
 from catrix.logging import get_logger
 
 log = get_logger(__name__)
@@ -129,6 +129,7 @@ def fetch_layer(
     geometry_bbox: tuple[float, float, float, float] | None = None,
     max_features: int | None = None,
     batch_callback: Any | None = None,
+    page_size: int | None = None,
 ) -> gpd.GeoDataFrame:
     """Fetch a full layer into memory. For very large layers prefer :func:`iter_features`
     with a bbox and a ``batch_callback`` that persists each page."""
@@ -140,6 +141,7 @@ def fetch_layer(
         out_fields=out_fields,
         geometry_bbox=geometry_bbox,
         max_features=max_features,
+        page_size=page_size,
     ):
         feats.append(f)
         if batch_callback and len(feats) >= 2000:
@@ -195,6 +197,121 @@ def mapserver_identify_raster(
         raise SourceUnavailableError(source_id, mapserver_url, f"identify error: {data['error']}")
     results = data.get("results", [])
     return results[0].get("attributes") if results else None
+
+
+IDENTIFY_BATCH = 250  # 300 points answered in ~12 s on the CGS server; 1000 was refused
+
+
+def mapserver_identify_raster_batch(
+    source_id: str,
+    mapserver_url: str,
+    layer_id: int,
+    points: list[tuple[float, float]],
+    *,
+    batch: int = IDENTIFY_BATCH,
+) -> list[dict[str, Any] | None]:
+    """MapServer ``identify`` on a raster layer for many points at once.
+
+    ``identify`` accepts an ``esriGeometryMultipoint`` and returns one result per input
+    point, in input order, including points that fall on NoData (their ``Raster.Value``
+    is null) - verified against the CGS MS58 service on 2026-10-13. The request is POSTed
+    because a few hundred coordinates exceed a comfortable URL length. A batch whose
+    result count does not match its point count is re-queried point by point rather
+    than trusted, so alignment can never silently drift.
+    """
+    out: list[dict[str, Any] | None] = []
+    for start in range(0, len(points), batch):
+        chunk = points[start : start + batch]
+        lons = [c[0] for c in chunk]
+        lats = [c[1] for c in chunk]
+        data = {
+            "geometry": json.dumps(
+                {"points": [[lon, lat] for lon, lat in chunk], "spatialReference": {"wkid": 4326}}
+            ),
+            "geometryType": "esriGeometryMultipoint",
+            "sr": 4326,
+            "layers": f"all:{layer_id}",
+            "tolerance": 0,
+            "mapExtent": (
+                f"{min(lons) - 0.01},{min(lats) - 0.01},{max(lons) + 0.01},{max(lats) + 0.01}"
+            ),
+            "imageDisplay": "1000,1000,96",
+            "returnGeometry": "false",
+            "f": "json",
+        }
+        resp = post_json(source_id, f"{mapserver_url}/identify", data=data)
+        if "error" in resp:
+            raise SourceUnavailableError(
+                source_id, mapserver_url, f"identify error: {resp['error']}"
+            )
+        results = resp.get("results", [])
+        if len(results) != len(chunk):
+            log.warning(
+                "identify_batch_misaligned",
+                source=source_id,
+                expected=len(chunk),
+                got=len(results),
+            )
+            out.extend(
+                mapserver_identify_raster(source_id, mapserver_url, layer_id, lon, lat)
+                for lon, lat in chunk
+            )
+            continue
+        out.extend(r.get("attributes") for r in results)
+    return out
+
+
+def imageserver_sample_batch(
+    source_id: str,
+    imageserver_url: str,
+    points: list[tuple[float, float]],
+    *,
+    batch: int = IDENTIFY_BATCH,
+) -> list[float | None]:
+    """ImageServer ``getSamples`` for many points at once (one value per point, NoData
+    as None). ``getSamples`` accepts an ``esriGeometryMultipoint`` and returns one sample
+    per input point in input order, with an empty ``value`` on NoData (verified against
+    CGS MS48 on 2026-10-13: 300 points in ~15 s). Each sample carries its location, which
+    is checked against the request; any mismatch falls back to single-point sampling for
+    that chunk."""
+    out: list[float | None] = []
+    for start in range(0, len(points), batch):
+        chunk = points[start : start + batch]
+        data = {
+            "geometry": json.dumps(
+                {"points": [[lon, lat] for lon, lat in chunk], "spatialReference": {"wkid": 4326}}
+            ),
+            "geometryType": "esriGeometryMultipoint",
+            "returnFirstValueOnly": "true",
+            "returnGeometry": "true",
+            "f": "json",
+        }
+        resp = post_json(source_id, f"{imageserver_url}/getSamples", data=data)
+        if "error" in resp:
+            raise SourceUnavailableError(
+                source_id, imageserver_url, f"getSamples error: {resp['error']}"
+            )
+        samples = resp.get("samples", [])
+        aligned = len(samples) == len(chunk) and all(
+            abs(float(s.get("location", {}).get("x", 1e9)) - lon) < 1e-6
+            and abs(float(s.get("location", {}).get("y", 1e9)) - lat) < 1e-6
+            for s, (lon, lat) in zip(samples, chunk, strict=True)
+        )
+        if not aligned:
+            log.warning(
+                "getsamples_batch_misaligned",
+                source=source_id,
+                expected=len(chunk),
+                got=len(samples),
+            )
+            out.extend(
+                imageserver_sample(source_id, imageserver_url, lon, lat) for lon, lat in chunk
+            )
+            continue
+        for s in samples:
+            v = s.get("value")
+            out.append(None if v in (None, "", "NoData") else float(v))
+    return out
 
 
 def imageserver_sample(

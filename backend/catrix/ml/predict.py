@@ -46,7 +46,18 @@ def load_selected_model() -> tuple[Any, dict[str, Any]] | None:
     sel = next((m for m in doc["models"] if m.get("is_selected")), None)
     if sel is None or not Path(sel["artifact_path"]).exists():
         return None
-    return joblib.load(sel["artifact_path"]), doc
+    tm = joblib.load(sel["artifact_path"])
+    # Inference runs on CPU regardless of the training device: request-sized inputs gain
+    # nothing from CUDA, and a CUDA booster used from the API's worker threads brought the
+    # uvicorn process down with a native fail-fast (0xC0000409) on the second request.
+    est = getattr(tm, "estimator", None)
+    if est is not None and hasattr(est, "set_params"):
+        try:
+            if "device" in est.get_params():
+                est.set_params(device="cpu")
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("model_device_reset_failed", error=repr(exc))
+    return tm, doc
 
 
 def reset_model_cache() -> None:
@@ -130,6 +141,11 @@ def predict_for_points(
     tm, doc = loaded
     fy = feature_year or (datetime.now(UTC).year - 1)
     feats = doc["feature_list"]
+    # Ad-hoc points (portfolio uploads, map clicks) carry no precomputed terrain or
+    # building-density columns; derive them the same way the training table did.
+    from catrix.ml.point_features import static_features_for_points
+
+    points = static_features_for_points(session, points)
     X = current_year_features(session, points, fy)
     for f in feats:
         if f not in X.columns:

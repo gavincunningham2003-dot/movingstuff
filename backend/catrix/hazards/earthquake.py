@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from catrix.hazards.base import HazardInfo, HazardModule, HazardResult
 from catrix.hazards.lookup import earthquake_history_lookup, nearest_line_distance, source_state
 from catrix.hazards.point_cache import PointCache
-from catrix.ingest.arcgis import imageserver_sample
+from catrix.ingest.arcgis import imageserver_sample, imageserver_sample_batch
 from catrix.ingest.http import SourceUnavailableError, get_json
 from catrix.ingest.registry import load_registry
 from catrix.logging import get_logger
@@ -66,6 +66,26 @@ class EarthquakePGAModule(HazardModule):
         cache.put(lon, lat, {"pga": val})
         return val
 
+    def _prefetch_cgs(self, cache: PointCache, points: pd.DataFrame) -> None:
+        """Resolve every uncached point with multipoint ``getSamples`` (250 per request)
+        so the per-point loop below only ever hits the cache for the CGS raster."""
+        missing = [
+            (float(r.lon), float(r.lat))
+            for r in points.itertuples()
+            if cache.get(float(r.lon), float(r.lat)) is None
+        ]
+        if not missing:
+            return
+        spec = load_registry().get(self.cgs_source)
+        assert spec.api_url
+        try:
+            vals = imageserver_sample_batch(self.cgs_source, spec.api_url, missing)
+        except SourceUnavailableError as exc:
+            log.warning("cgs_pga_batch_failed", error=str(exc))
+            return  # the per-point path will retry and report individually
+        for (lon, lat), val in zip(missing, vals, strict=True):
+            cache.put(lon, lat, {"pga": val})
+
     def _usgs(self, cache: PointCache, lon: float, lat: float) -> float | None:
         cached = cache.get(lon, lat)
         if cached is not None:
@@ -82,6 +102,7 @@ class EarthquakePGAModule(HazardModule):
             return self.unavailable(len(points), "network lookups disabled")
         cgs_cache = PointCache(self.cgs_source)
         usgs_cache = PointCache("usgs_designmaps_asce7_16")
+        self._prefetch_cgs(cgs_cache, points)
         out = []
         cgs_failures = 0
         for r in points.itertuples():

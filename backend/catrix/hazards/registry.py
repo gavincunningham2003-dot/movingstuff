@@ -98,6 +98,59 @@ def assess_points(
     return results
 
 
+POINT_SERVICE_SOURCES = (
+    "cgs_ms48_pga_2pc50",
+    "cgs_ms48_pga_10pc50",
+    "cgs_landslide_susceptibility_ms58",
+    "usgs_designmaps_asce7_16",
+    "usgs_epqs",
+    "noaa_atlas14",
+)
+
+
+def mark_lookup_sources(session: Session) -> dict[str, int]:
+    """Record the sources that are consulted per point rather than bulk-ingested, so the
+    provenance pages show them as used: each point cache's size, the Atlas 14 grid, and
+    the Hazus reference tables bundled with the code."""
+    from catrix.config import get_settings
+    from catrix.hazards.point_cache import PointCache
+    from catrix.ingest.registry import load_registry, mark_ingested
+
+    reg = load_registry()
+    marked: dict[str, int] = {}
+    for sid in POINT_SERVICE_SOURCES:
+        if sid not in reg.ids():
+            continue
+        cache = PointCache(sid)
+        n = len(cache._data)
+        version = "point-service lookups (cached per coordinate)"
+        if sid == "noaa_atlas14":
+            grid = reg.get(sid).raw_dir / "sw100yr24ha.asc"
+            if grid.exists():
+                version = "Atlas 14 Volume 6 grid (local raster sample)"
+        if n == 0 and version.startswith("point-service"):
+            continue
+        mark_ingested(session, sid, record_count=n, version=version)
+        marked[sid] = n
+    hazus = (
+        get_settings().registry_path.parent / "backend" / "catrix" / "finance" / "hazus_tables.yaml"
+    )
+    if "hazus_fragility_reference" in reg.ids() and hazus.exists():
+        import yaml
+
+        tables = yaml.safe_load(hazus.read_text(encoding="utf-8")) or {}
+        n = sum(len(v) for v in tables.values() if isinstance(v, dict | list))
+        mark_ingested(
+            session,
+            "hazus_fragility_reference",
+            record_count=n,
+            version="transcribed reference tables (verify flag)",
+        )
+        marked["hazus_fragility_reference"] = n
+    session.commit()
+    return marked
+
+
 def assess_all_addresses(
     session: Session, *, hazard_ids: list[str] | None = None, batch_size: int | None = None
 ) -> dict[str, int]:
@@ -149,4 +202,5 @@ def assess_all_addresses(
             total=len(rows),
             at=datetime.now(UTC).isoformat(),
         )
+    mark_lookup_sources(session)
     return counts

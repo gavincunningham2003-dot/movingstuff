@@ -7,6 +7,7 @@ from catrix.ingest.arcgis import (
     imageserver_sample,
     iter_features,
     mapserver_identify_raster,
+    mapserver_identify_raster_batch,
 )
 from catrix.ingest.http import SourceUnavailableError, download_file, get_json
 
@@ -115,3 +116,42 @@ def test_get_json_transport_error_becomes_source_unavailable():
     respx.get("https://example.test/api").mock(side_effect=httpx.ConnectError("reset"))
     with pytest.raises(SourceUnavailableError):
         get_json("t", "https://example.test/api")
+
+
+@respx.mock
+def test_identify_batch_keeps_point_order_and_nodata():
+    """One multipoint request per batch; NoData points stay in place as None values."""
+    calls: list[int] = []
+
+    def _answer(request):
+        import json as _json
+
+        pts = _json.loads(dict(httpx.QueryParams(request.content.decode()))["geometry"])["points"]
+        calls.append(len(pts))
+        results = [
+            {"layerId": 0, "attributes": {"Raster.Value": None if lon < -123 else "7"}}
+            for lon, _lat in pts
+        ]
+        return httpx.Response(200, json={"results": results})
+
+    respx.post("https://example.test/MapServer/identify").mock(side_effect=_answer)
+    points = [(-122.18, 37.85), (-123.5, 37.0), (-121.94, 37.50), (-122.0, 37.0), (-123.9, 38.0)]
+    out = mapserver_identify_raster_batch("t", "https://example.test/MapServer", 0, points, batch=2)
+    assert calls == [2, 2, 1]
+    assert [a["Raster.Value"] for a in out] == ["7", None, "7", "7", None]
+
+
+@respx.mock
+def test_identify_batch_falls_back_per_point_when_misaligned():
+    """A batch answer with the wrong count is never trusted; the chunk is re-queried singly."""
+    respx.post("https://example.test/MapServer/identify").mock(
+        return_value=httpx.Response(200, json={"results": [{"layerId": 0, "attributes": {}}]})
+    )
+    single = respx.get("https://example.test/MapServer/identify").mock(
+        return_value=httpx.Response(200, json={"results": [{"attributes": {"Raster.Value": "3"}}]})
+    )
+    out = mapserver_identify_raster_batch(
+        "t", "https://example.test/MapServer", 0, [(-122.0, 37.0), (-122.1, 37.1)], batch=2
+    )
+    assert single.call_count == 2
+    assert [a["Raster.Value"] for a in out] == ["3", "3"]

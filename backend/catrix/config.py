@@ -51,13 +51,20 @@ class Settings(BaseSettings):
     batch_size: int = 500
 
     mlflow_tracking_uri: str | None = None
+    # XGBoost device: "cpu" or "cuda" (pip wheels ship CUDA support; needs an NVIDIA driver).
+    ml_device: str = "cpu"
+    # LANDFIRE Product Service (lfps.usgs.gov/api) requires a contact e-mail per job;
+    # unset disables the LANDFIRE fuel connector with an explanatory message.
+    landfire_email: str | None = None
 
     # NSI counties above this many structures are skipped unless --include-large.
     nsi_max_structures_per_county: int = 1_500_000
 
     # API guard rails
     max_page_size: int = 500
-    max_bbox_area_deg2: float = 4.0  # ~2x2 degrees; prevents unbounded spatial queries
+    # Rejects unbounded spatial queries. 120 deg^2 admits the whole California extent
+    # (~99 deg^2), which the dashboard clips its map view to before requesting.
+    max_bbox_area_deg2: float = 120.0
 
     @field_validator("data_dir", mode="before")
     @classmethod

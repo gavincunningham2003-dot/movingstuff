@@ -128,6 +128,7 @@ sources:
     verified_on: "2026-10-13"
     verification_status: verified
     fields: [SRA, FHSZ, FHSZ_Description]
+    planned: true  # cross-check layer; the combined 2024 layer is the one assessed
     notes: Secondary/cross-check layer for the SRA portion of the combined 2024 layer.
 
   - id: mtbs_burn_severity
@@ -143,6 +144,7 @@ sources:
     auth_required: false
     verified_on: "2026-10-13"
     verification_status: local_only
+    planned: true  # manual download behind an anti-bot form; no connector
     notes: >
       The MTBS direct-download page is a JavaScript application behind an antibot form; no
       stable file URL could be confirmed. Download the CONUS burned-area boundaries zip and
@@ -154,7 +156,11 @@ sources:
     provider: USGS / USFS LANDFIRE
     category: environment
     url: https://www.landfire.gov/
-    api_url: https://lfps.usgs.gov/arcgis/rest/services/LandfireProductService/GPServer/LandfireProductService
+    # The ArcGIS GPServer submitJob endpoint now returns the LFPS web app's HTML; jobs are
+    # submitted through the JSON API (GET /api/job/submit?Email=&Layer_List=&Area_of_Interest=
+    # &Output_Projection=, polled at /api/job/status?JobId=, which reports outputFile).
+    # Verified 2026-10-13: a 0.1-degree LF2022 FBFM40+CC job succeeded in under a minute.
+    api_url: https://lfps.usgs.gov/api
     format: Multi-band GeoTIFF zip from an asynchronous geoprocessing job (Layer_List; Area_of_Interest as W S E N in WGS84)
     crs: EPSG:5070 (30 m)
     geographic_coverage: CONUS (clipped to the sampled address extent)
@@ -304,33 +310,48 @@ sources:
     verified_on: "2026-10-13"
     verification_status: verified
     fields: [Evacuate, County, Label]
-    notes: Planning-level maximum inundation; not an annual probability.
+    page_size: 10
+    notes: >-
+      Planning-level maximum inundation; not an annual probability. Only 40 features but
+      each is a very large coastal multipolygon (5 features ~ 83 MB GeoJSON); pages of 20+
+      make the service return HTTP 500/504, hence the page_size override.
 
   - id: cgs_seismic_hazard_zones
-    name: CGS Seismic Hazard Zones (liquefaction and earthquake-induced landslide)
+    name: CGS Seismic Hazard Zones — Liquefaction Zones (official regulatory zones)
     provider: California Geological Survey
     category: liquefaction_hazard
     url: https://www.conservation.ca.gov/cgs/sh/program
-    format: Shapefile / GDB (zipped, statewide release)
-    crs: EPSG:3310 or EPSG:4326 (varies)
+    # CGS publishes the official zones on ArcGIS Online (owner gis_cadoc), one feature service
+    # per zone type: CGS_Liquefaction_Zones, CGS_Landslide_Zones, CGS_SHZ_Unevaluated_Areas.
+    # www.conservation.ca.gov itself refused connections from the authoring network (also via
+    # VPN) on 2026-10-13; ArcGIS Online is reachable. Verified: 2,034 polygons, fields
+    # OBJECTID, QUAD_NAME, RELEASED, REVISED, PREV_DATES, GEOPDFLINK, REPORTLINK, COMMENTS.
+    api_url: https://services2.arcgis.com/zr3KAIbsRSUyARHG/arcgis/rest/services/CGS_Liquefaction_Zones/FeatureServer/0
+    format: ArcGIS FeatureServer (polygon); shapefile also accepted locally
+    crs: EPSG:3857 (service) / EPSG:4326 (query)
     geographic_coverage: Mapped quadrangles only (urban Southern CA and Bay Area); NOT statewide
-    temporal_coverage: Zones released 1997-present
+    temporal_coverage: Zones released 1997-present (RELEASED per polygon)
     licence: Public (CGS)
     auth_required: false
     verified_on: "2026-10-13"
-    verification_status: local_only
+    verification_status: verified
+    fields: [QUAD_NAME, RELEASED, REVISED]
     notes: >
-      No REST query layer for the official zones was found on the CGS server listing on
-      2026-10-13. Download the statewide zip from the CGS Seismic Hazards Program page into
-      data/raw/cgs_seismic_hazard_zones/. Locations outside mapped quadrangles are reported
-      as "outside_coverage", never as "no hazard".
+      Every polygon is a liquefaction zone; the quadrangle name is stored as the
+      classification attribute and the module reports "Liquefaction zone". Locations outside
+      mapped quadrangles are reported as "outside_coverage", never as "no hazard". The
+      companion CGS_SHZ_Unevaluated_Areas service (2,748 quadrangle polygons) could be used
+      to tell "evaluated, not zoned" from "never evaluated"; not yet wired in.
 
   - id: fema_nfhl
     name: FEMA National Flood Hazard Layer — Flood Hazard Areas (layer 28)
     provider: FEMA
     category: flood_hazard
     url: https://www.fema.gov/flood-maps/national-flood-hazard-layer
-    api_url: https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28
+    # FEMA's own host (hazards.fema.gov/arcgis/.../NFHL/MapServer/28) geo-blocks non-US
+    # networks. Esri's Living Atlas mirror of the same S_FLD_HAZ_AR layer (reduced attribute
+    # set, same field names, maintained from FEMA releases) is used instead.
+    api_url: https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Flood_Hazard_Reduced_Set_gdb/FeatureServer/0
     format: ArcGIS MapServer (polygon query)
     crs: EPSG:4269 (service) / EPSG:3857 (query)
     geographic_coverage: Mapped communities (gaps exist; unmapped is not low risk)
@@ -338,13 +359,15 @@ sources:
     licence: Public domain
     auth_required: false
     verified_on: "2026-10-13"
-    verification_status: unverified
+    verification_status: verified
     fields: [DFIRM_ID, FLD_AR_ID, FLD_ZONE, ZONE_SUBTY, SFHA_TF, STATIC_BFE, DEPTH, VELOCITY]
     notes: >
-      hazards.fema.gov reset every TLS connection from the development network on
-      2026-10-13 (likely a WAF rule), so the field list is taken from FEMA's published
-      NFHL schema (S_FLD_HAZ_AR) and must be confirmed on first successful run. The
-      connector also accepts a locally downloaded NFHL state GDB/shapefile.
+      hazards.fema.gov resets every TCP connection from non-US networks (confirmed with
+      curl, TLS verification off, on 2026-10-13: a geo-block, not certificate interception).
+      The Esri Living Atlas "USA Flood Hazard Areas" service mirrors S_FLD_HAZ_AR with the
+      same field names (DFIRM_ID, FLD_AR_ID, FLD_ZONE, ZONE_SUBTY, SFHA_TF, STATIC_BFE,
+      DEPTH, VELOCITY all confirmed; 4.4M polygons nationwide, maxRecordCount 750) and is
+      used instead. The connector also accepts a locally downloaded NFHL state GDB/shapefile.
 
   - id: usgs_nhd_flowlines
     name: USGS National Hydrography Dataset — flowlines (HU4 subsets)
@@ -360,6 +383,7 @@ sources:
     auth_required: false
     verified_on: "2026-10-13"
     verification_status: unverified
+    planned: true  # distance-to-watercourse connector not implemented yet
     notes: Used for distance-to-nearest-watercourse. Not probed from this environment.
 
   - id: fema_nri_counties
@@ -368,6 +392,9 @@ sources:
     category: regional_benchmark
     url: https://hazards.fema.gov/nri/data-resources
     download_url: https://hazards.fema.gov/nri/Content/StaticDocuments/DataDownload//NRI_Table_Counties/NRI_Table_Counties.zip
+    # hazards.fema.gov geo-blocks non-US networks; FEMA's own ArcGIS Online service carries
+    # the same county table (one row per county, same column names, NRI 2.0 naming).
+    api_url: https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0
     format: CSV (zip)
     crs: n/a (tabular, keyed by county FIPS)
     geographic_coverage: United States counties
@@ -401,6 +428,11 @@ sources:
     name: NOAA Atlas 14 precipitation-frequency point estimates
     provider: NOAA NWS HDSC
     category: extreme_rainfall
+    # Volume 6 (California) GIS grid, 100-year 24-hour partial-duration estimate, in
+    # thousandths of an inch on a 30-arc-second EPSG:4269 grid (nodata -999). NOAA files the
+    # California volume under the "sw" directory. Sampled locally; the point service below
+    # is the fallback.
+    download_url: https://hdsc.nws.noaa.gov/pub/hdsc/data/sw/sw100yr24ha.zip
     api_url: https://hdsc.nws.noaa.gov/cgi-bin/hdsc/new/cgi_readH5.py?lat={lat}&lon={lon}&type=pf&data=depth&units=metric&series=pds
     format: Text (JavaScript-style array)
     crs: EPSG:4326
@@ -448,6 +480,7 @@ sources:
     auth_required: false
     verified_on: "2026-10-13"
     verification_status: unverified
+    superseded_by: prism_climate  # PRISM gridded anomalies replaced station-based GSOM
     notes: Annual precipitation/temperature anomalies for ML features (nearest-station assignment).
 
   - id: us_drought_monitor
@@ -484,6 +517,7 @@ sources:
     auth_required: false
     verified_on: "2026-10-13"
     verification_status: unverified
+    planned: true  # no module consumes tract housing values yet
     notes: Tract median home value (B25077_001E) is an area-level estimate, not a property value.
 
   - id: usace_nsi

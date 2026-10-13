@@ -106,6 +106,21 @@ def sample_categorical(ds: rasterio.DatasetReader, lon: float, lat: float) -> in
     return int(val)
 
 
+def sample_value(ds: rasterio.DatasetReader, lon: float, lat: float) -> float | None:
+    """Single-band float sample at a point; None outside the grid or on NoData."""
+    x, y = _to_raster_crs(ds, lon, lat)
+    try:
+        row, col = ds.index(x, y)
+    except Exception:
+        return None
+    if row < 0 or col < 0 or row >= ds.height or col >= ds.width:
+        return None
+    val = ds.read(1, window=Window(col, row, 1, 1))[0, 0]
+    if (ds.nodata is not None and val == ds.nodata) or np.isnan(val):
+        return None
+    return float(val)
+
+
 def dem_tile_id(lon: float, lat: float) -> str:
     """USGS 3DEP 1x1 degree tile naming: the tile's north-west corner, e.g. n38w123 covers
     lat 37..38, lon -123..-122."""

@@ -29,6 +29,7 @@ import rasterio
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from catrix.config import get_settings
 from catrix.db.models import Address
 from catrix.geo.raster import sample_values, window_fraction
 from catrix.ingest.base import IngestResult
@@ -87,18 +88,25 @@ def is_burnable(code: int | None) -> int | None:
 def submit_lfps_job(version: str, bbox: tuple[float, float, float, float]) -> str:
     spec = load_registry().get(SOURCE_ID)
     assert spec.api_url
+    email = get_settings().landfire_email
+    if not email:
+        raise SourceUnavailableError(
+            SOURCE_ID,
+            spec.api_url,
+            "LFPS requires a contact e-mail per job; set CATRIX_LANDFIRE_EMAIL",
+        )
     minx, miny, maxx, maxy = bbox
     params = {
+        "Email": email,
         "Layer_List": f"{version}_FBFM40;{version}_CC",
         "Area_of_Interest": f"{minx} {miny} {maxx} {maxy}",
         "Output_Projection": "5070",
-        "f": "json",
     }
-    data = get_json(SOURCE_ID, f"{spec.api_url}/submitJob", params=params)
+    data = get_json(SOURCE_ID, f"{spec.api_url}/job/submit", params=params)
     job_id = data.get("jobId")
     if not job_id:
         raise SourceUnavailableError(
-            SOURCE_ID, spec.api_url, f"submitJob returned no jobId: {data}"
+            SOURCE_ID, spec.api_url, f"job submit returned no jobId: {data}"
         )
     return str(job_id)
 
@@ -109,21 +117,19 @@ def wait_for_lfps_job(job_id: str) -> str:
     assert spec.api_url
     waited = 0
     while waited < MAX_WAIT_SECONDS:
-        status = get_json(SOURCE_ID, f"{spec.api_url}/jobs/{job_id}", params={"f": "json"})
-        st = status.get("jobStatus")
-        if st == "esriJobSucceeded":
-            res = get_json(
-                SOURCE_ID, f"{spec.api_url}/jobs/{job_id}/results/Output_File", params={"f": "json"}
-            )
-            url = (res.get("value") or {}).get("url")
+        status = get_json(SOURCE_ID, f"{spec.api_url}/job/status", params={"JobId": job_id})
+        st = str(status.get("status", ""))
+        if st == "Succeeded":
+            url = status.get("outputFile")
             if not url:
                 raise SourceUnavailableError(
-                    SOURCE_ID, spec.api_url, f"job {job_id} has no output url"
+                    SOURCE_ID, spec.api_url, f"job {job_id} has no outputFile"
                 )
             return str(url)
-        if st in ("esriJobFailed", "esriJobCancelled", "esriJobTimedOut"):
+        if st in ("Failed", "Cancelled", "TimedOut", "Error"):
+            msgs = [m.get("description") for m in status.get("messages", [])][-3:]
             raise SourceUnavailableError(
-                SOURCE_ID, spec.api_url, f"job {job_id} ended with {st}: {status.get('messages')}"
+                SOURCE_ID, spec.api_url, f"job {job_id} ended with {st}: {msgs}"
             )
         time.sleep(POLL_SECONDS)
         waited += POLL_SECONDS

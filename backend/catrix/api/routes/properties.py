@@ -212,6 +212,17 @@ def _prediction_out(db: DB, address_id: int) -> WildfirePredictionOut | None:
         .join(ModelVersion, ModelVersion.id == Prediction.model_version_id)
         .where(Prediction.address_id == address_id, ModelVersion.is_selected.is_(True))
     ).first()
+    stale = False
+    if row is None:
+        # Right after a retrain the new live version has no predictions until
+        # `catrix ml predict` has run; show the newest stored prediction meanwhile.
+        row = db.execute(
+            select(Prediction, ModelVersion)
+            .join(ModelVersion, ModelVersion.id == Prediction.model_version_id)
+            .where(Prediction.address_id == address_id)
+            .order_by(ModelVersion.trained_at.desc())
+        ).first()
+        stale = row is not None
     if row is None:
         return None
     pred, mv = row
@@ -227,6 +238,14 @@ def _prediction_out(db: DB, address_id: int) -> WildfirePredictionOut | None:
         features=pred.features or {},
         shap=(pred.shap_values or {}).get("contributions", []),
         caveats=[
+            *(
+                [
+                    f"From earlier model version {mv.version}: the live model's predictions have "
+                    "not been generated yet (run `catrix ml predict`)."
+                ]
+                if stale
+                else []
+            ),
             "Calibrated probability of mapped perimeter exposure next year; not building damage.",
             "SHAP contributions are in the model's raw output space (log-odds for XGBoost/logistic regression).",
         ],
@@ -313,7 +332,11 @@ def get_property(property_id: int, db: DB) -> PropertyDetailOut:
     profile, structure_out = _structure(db, property_id)
     fin = compute_scenarios(results, building=profile)
     return PropertyDetailOut(
-        **summary.model_dump(),
+        # the summary already carries composite_score; override it with the fresh score
+        **{
+            **summary.model_dump(),
+            "composite_score": comp.score if comp else summary.composite_score,
+        },
         acquired_at=addr.acquired_at,
         building=BuildingMatchOut(
             building_id=ab.building_id,
@@ -349,7 +372,6 @@ def get_property(property_id: int, db: DB) -> PropertyDetailOut:
         )
         if fin["scenarios"]
         else None,
-        composite_score=comp.score if comp else summary.composite_score,
     )
 
 

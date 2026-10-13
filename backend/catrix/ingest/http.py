@@ -191,6 +191,43 @@ def get_json(
         raise SourceUnavailableError(source_id, url, "response was not JSON") from exc
 
 
+def post_json(
+    source_id: str,
+    url: str,
+    *,
+    data: dict[str, Any],
+    headers: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> Any:
+    """POST a form-encoded body and return the JSON response, with the same retry and
+    error mapping as :func:`get_json`. Used where the request is too large for a URL
+    (e.g. a multipoint geometry)."""
+    settings = get_settings()
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(settings.http_max_retries),
+        wait=wait_exponential(multiplier=1, min=1, max=20),
+        retry=retry_if_exception(_is_retryable),
+    )
+    def _post() -> Any:
+        with _client(timeout=timeout, headers=headers) as client:
+            resp = client.post(url, data=data)
+            resp.raise_for_status()
+            return resp.json()
+
+    try:
+        return _post()
+    except httpx.HTTPStatusError as exc:
+        raise SourceUnavailableError(
+            source_id, str(exc.request.url), f"HTTP {exc.response.status_code}"
+        ) from exc
+    except httpx.TransportError as exc:
+        raise SourceUnavailableError(source_id, url, f"transport error: {exc!r}") from exc
+    except json.JSONDecodeError as exc:
+        raise SourceUnavailableError(source_id, url, "response was not JSON") from exc
+
+
 def get_text(source_id: str, url: str, *, params: dict[str, Any] | None = None) -> str:
     settings = get_settings()
 

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from catrix.db.models import RegionalIndex
 from catrix.ingest.base import IngestResult
-from catrix.ingest.http import SourceUnavailableError, download_file
+from catrix.ingest.http import SourceUnavailableError, download_file, get_json
 from catrix.ingest.registry import load_registry, mark_failed, mark_ingested
 from catrix.ingest.store import write_parquet
 from catrix.logging import get_logger
@@ -23,7 +23,8 @@ SOURCE_ID = "fema_nri_counties"
 METRICS = {
     "WFIR": "wildfire",
     "ERQK": "earthquake",
-    "RFLD": "flood_riverine",
+    "RFLD": "flood_riverine",  # NRI 1.x name
+    "IFLD": "flood_riverine",  # NRI 2.0 name ("Inland Flooding"); whichever is present is used
     "CFLD": "coastal_flooding",
     "DRGT": "drought",
     "HWAV": "extreme_heat",
@@ -39,6 +40,40 @@ def _find_local() -> list:
     if not spec.raw_dir.exists():
         return []
     return sorted(spec.raw_dir.glob("*.csv")) + sorted(spec.raw_dir.glob("*.zip"))
+
+
+def _fetch_feature_service(api_url: str) -> pd.DataFrame:
+    """Read the California rows of the NRI county table from FEMA's ArcGIS Online feature
+    service (one attribute row per county, same column names as the CSV release)."""
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        data = get_json(
+            SOURCE_ID,
+            f"{api_url}/query",
+            params={
+                "where": "STATEABBRV='CA'",
+                "outFields": "*",
+                "returnGeometry": "false",
+                "resultOffset": offset,
+                "resultRecordCount": 1000,
+                "f": "json",
+            },
+        )
+        if "error" in data:
+            raise SourceUnavailableError(SOURCE_ID, api_url, str(data["error"]))
+        feats = data.get("features", [])
+        rows.extend(f["attributes"] for f in feats)
+        if not data.get("exceededTransferLimit") or not feats:
+            break
+        offset += len(feats)
+    if not rows:
+        raise SourceUnavailableError(SOURCE_ID, api_url, "feature service returned no rows")
+    df = pd.DataFrame(rows)
+    for col in ("STCOFIPS", "STATEFIPS", "COUNTYFIPS"):
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+    return df
 
 
 class NRIConnector:
@@ -59,11 +94,17 @@ class NRIConnector:
             except SourceUnavailableError as exc:
                 if local:
                     path = local[0]
+                elif spec.api_url:
+                    log.warning("nri_zip_unavailable_using_feature_service", error=str(exc))
+                    path = None
                 else:
                     mark_failed(session, SOURCE_ID, str(exc), unavailable=True)
                     return IngestResult(SOURCE_ID, "unavailable", message=str(exc))
         try:
-            if str(path).endswith(".zip"):
+            if path is None:
+                assert spec.api_url
+                df = _fetch_feature_service(spec.api_url)
+            elif str(path).endswith(".zip"):
                 with zipfile.ZipFile(path) as zf:
                     csvs = [n for n in zf.namelist() if n.lower().endswith(".csv")]
                     if not csvs:

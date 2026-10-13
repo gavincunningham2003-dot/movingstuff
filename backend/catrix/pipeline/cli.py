@@ -304,12 +304,17 @@ def score() -> None:
 
 
 @ml_app.command("build-dataset")
-def ml_build_dataset() -> None:
+def ml_build_dataset(
+    target: str = typer.Option("inside", help="label definition: inside | within_1km"),
+) -> None:
     from catrix.db.session import session_scope
-    from catrix.ml.dataset import DEFAULT_SPEC, build_dataset
+    from catrix.ml.dataset import SPECS, build_dataset
 
+    if target not in SPECS:
+        typer.echo(f"unknown target {target!r}; choose from {sorted(SPECS)}")
+        raise typer.Exit(2)
     with session_scope() as s:
-        df = build_dataset(s, DEFAULT_SPEC)
+        df = build_dataset(s, SPECS[target])
     typer.echo(
         f"rows={len(df)} positives={int(df['label'].sum())} prevalence={df['label'].mean():.5f}"
     )
@@ -317,17 +322,37 @@ def ml_build_dataset() -> None:
 
 
 @ml_app.command("train")
-def ml_train(version: str | None = None) -> None:
+def ml_train(
+    version: str | None = None,
+    target: str = typer.Option("inside", help="dataset target to train on: inside | within_1km"),
+    no_lag_features: bool = typer.Option(
+        False,
+        "--no-lag-features",
+        help="drop the *_version_lag_years columns (calendar-year proxies)",
+    ),
+    no_select: bool = typer.Option(
+        False, "--no-select", help="record the run without making it the model the API uses"
+    ),
+) -> None:
     from catrix.db.session import session_scope
-    from catrix.ml.dataset import DEFAULT_SPEC, load_dataset
+    from catrix.ml.dataset import SPECS, load_dataset
     from catrix.ml.train import train_all
 
-    df = load_dataset()
+    if target not in SPECS:
+        typer.echo(f"unknown target {target!r}; choose from {sorted(SPECS)}")
+        raise typer.Exit(2)
+    spec = SPECS[target]
+    df = load_dataset(spec.version)
     if df is None:
-        typer.echo("dataset not found; run `catrix ml build-dataset`")
+        typer.echo(
+            f"dataset {spec.version} not found; run `catrix ml build-dataset --target {target}`"
+        )
         raise typer.Exit(1)
+    exclude = [c for c in df.columns if c.endswith("_version_lag_years")] if no_lag_features else []
     with session_scope() as s:
-        doc = train_all(df, DEFAULT_SPEC, session=s, version=version)
+        doc = train_all(
+            df, spec, session=s, version=version, exclude_features=exclude, set_latest=not no_select
+        )
     typer.echo(
         f"status={doc['status']} selected={doc.get('selected_model')} version={doc.get('version')}"
     )

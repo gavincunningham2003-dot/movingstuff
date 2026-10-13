@@ -75,8 +75,11 @@ LAYERS: dict[str, PolygonLayerSpec] = {
     "liquefaction": PolygonLayerSpec(
         source_id="cgs_seismic_hazard_zones",
         hazard_id="liquefaction",
-        fields=[],
-        class_field="ZONE",  # 'Liquefaction' in CGS SHZ releases; validated at load
+        # CGS publishes the official zones as one feature service per zone type on ArcGIS
+        # Online; every polygon in this layer is a liquefaction zone, attributed by the
+        # quadrangle it belongs to and its release date.
+        fields=["OBJECTID", "QUAD_NAME", "RELEASED", "REVISED"],
+        class_field="QUAD_NAME",
         local_glob="*.shp",
     ),
 }
@@ -189,6 +192,7 @@ class PolygonLayerConnector:
                     out_fields=spec.fields or None,
                     geometry_bbox=bbox,
                     batch_callback=persist,
+                    page_size=src.page_size,
                 )
                 how = "arcgis"
         except SourceUnavailableError as exc:

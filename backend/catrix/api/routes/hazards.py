@@ -7,8 +7,15 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from catrix.api.deps import DB, BBox, parse_bbox
-from catrix.api.schemas import HazardCatalogueOut, HazardLayerFeatureCollection
-from catrix.hazards.registry import catalogue
+from catrix.api.schemas import (
+    CompositeScoreOut,
+    HazardAssessmentOut,
+    HazardCatalogueOut,
+    HazardLayerFeatureCollection,
+    PointAssessmentOut,
+    WildfirePredictionOut,
+)
+from catrix.hazards.registry import assess_points, build_modules, catalogue
 
 router = APIRouter(prefix="/hazards", tags=["hazards"])
 
@@ -80,6 +87,92 @@ def list_hazards() -> list[HazardCatalogueOut]:
         )
         for h in catalogue()
     ]
+
+
+@router.get("/point", response_model=PointAssessmentOut)
+def assess_point(
+    db: DB,
+    lon: float = Query(..., ge=-180, le=180, description="Longitude (WGS84)"),
+    lat: float = Query(..., ge=-90, le=90, description="Latitude (WGS84)"),
+) -> PointAssessmentOut:
+    """Assess any coordinate on demand: every hazard module, the composite screening
+    index and the wildfire model, exactly as for an uploaded portfolio location. Nothing
+    is stored. Outside California the hazard layers report 'outside_coverage'."""
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    from catrix.ml.predict import predict_for_points
+    from catrix.scoring.composite import compute_composite
+
+    county = db.execute(
+        text(
+            "SELECT fips, name FROM regions WHERE region_type = 'county' "
+            "AND ST_Contains(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1"
+        ),
+        {"lon": lon, "lat": lat},
+    ).first()
+    points = pd.DataFrame(
+        {"lon": [lon], "lat": [lat], "county_fips": [county.fips if county else None]}
+    )
+    results = assess_points(db, points, build_modules())
+    per = {hid: lst[0] for hid, lst in results.items() if lst}
+    pred_out: WildfirePredictionOut | None = None
+    try:
+        preds = predict_for_points(db, points, with_shap=True)
+    except Exception as exc:  # the model is optional; the hazards are not
+        preds = [None]
+        _log_predict_failure(exc)
+    pr = preds[0] if preds else None
+    if pr is not None and pr.get("probability") is not None:
+        pred_out = WildfirePredictionOut(
+            model_version=pr["model_version"],
+            target_definition=pr["target_definition"],
+            probability=pr["probability"],
+            prediction_year=pr.get("prediction_year"),
+            threshold=pr.get("threshold"),
+            predicted_class=(
+                pr["probability"] >= pr["threshold"] if pr.get("threshold") is not None else None
+            ),
+            base_value=pr.get("base_value"),
+            features=pr.get("features", {}) or {},
+            shap=pr.get("shap", []) or [],
+            caveats=pr.get("caveats", []) or [],
+        )
+        from catrix.hazards.base import HazardResult
+
+        per["wildfire_ml"] = HazardResult(
+            "wildfire_ml",
+            "Wildfire - ML perimeter exposure (next year)",
+            pr["model_version"],
+            "covered",
+            value=pr["probability"],
+            units="probability",
+            probability_horizon="next calendar year",
+            method="ml_model",
+            confidence="medium",
+            details={"threshold": pr.get("threshold")},
+            caveats=pr.get("caveats", []) or [],
+        )
+    comp = compute_composite(per)
+    db.rollback()  # read-only request; release any transaction the lookups opened
+    return PointAssessmentOut(
+        lon=lon,
+        lat=lat,
+        county_fips=county.fips if county else None,
+        county=county.name if county else None,
+        in_california=county is not None,
+        hazards=[HazardAssessmentOut(**r.to_dict()) for r in per.values()],
+        prediction=pred_out,
+        score=CompositeScoreOut(**comp.to_dict()),
+        assessed_at=datetime.now(UTC),
+    )
+
+
+def _log_predict_failure(exc: Exception) -> None:
+    from catrix.logging import get_logger
+
+    get_logger(__name__).warning("point_prediction_failed", error=repr(exc))
 
 
 @router.get("/{hazard_id}/geojson", response_model=HazardLayerFeatureCollection)

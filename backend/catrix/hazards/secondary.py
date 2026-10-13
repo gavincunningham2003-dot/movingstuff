@@ -8,15 +8,22 @@ scale it does not have.
 from __future__ import annotations
 
 import re
+import zipfile
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
+from rasterio.transform import rowcol
 from sqlalchemy.orm import Session
 
+from catrix.geo.raster import open_raster
 from catrix.hazards.base import HazardInfo, HazardModule, HazardResult
 from catrix.hazards.lookup import polygon_count, polygon_lookup, regional_lookup, source_state
 from catrix.hazards.point_cache import PointCache
-from catrix.ingest.arcgis import mapserver_identify_raster
-from catrix.ingest.http import SourceUnavailableError, get_text
+from catrix.ingest.arcgis import mapserver_identify_raster_batch
+from catrix.ingest.http import SourceUnavailableError, download_file, get_text
 from catrix.ingest.registry import load_registry
 from catrix.logging import get_logger
 
@@ -55,23 +62,32 @@ class LandslideSusceptibilityModule(HazardModule):
         spec = load_registry().get(self.info.source_ids[0])
         assert spec.api_url
         cache = PointCache(self.info.source_ids[0])
-        out = []
-        for r in points.itertuples():
-            lon, lat = float(r.lon), float(r.lat)
-            cached = cache.get(lon, lat)
+        coords = [(float(r.lon), float(r.lat)) for r in points.itertuples()]
+
+        # One multipoint identify per IDENTIFY_BATCH uncached points instead of one request
+        # per address (the service is a raster behind a MapServer: no download, no query).
+        missing = [c for c in coords if cache.get(*c) is None]
+        unavailable: str | None = None
+        if missing:
             try:
-                if cached is None:
-                    attrs = mapserver_identify_raster(
-                        self.info.source_ids[0], spec.api_url, 0, lon, lat
-                    )
+                attrs_list = mapserver_identify_raster_batch(
+                    self.info.source_ids[0], spec.api_url, 0, missing
+                )
+            except SourceUnavailableError as exc:
+                unavailable = str(exc)
+            else:
+                for (lon, lat), attrs in zip(missing, attrs_list, strict=True):
                     raw = (attrs or {}).get("Raster.Value") or (attrs or {}).get(
                         "UniqueValue.Pixel Value"
                     )
                     cls = int(raw) if raw not in (None, "", "NoData") else None
                     cache.put(lon, lat, {"class": cls})
-                else:
-                    cls = cached.get("class")
-            except SourceUnavailableError as exc:
+        cache.flush()
+
+        out = []
+        for lon, lat in coords:
+            cached = cache.get(lon, lat)
+            if cached is None:
                 out.append(
                     HazardResult(
                         self.info.hazard_id,
@@ -79,10 +95,11 @@ class LandslideSusceptibilityModule(HazardModule):
                         self.info.source_ids[0],
                         "unavailable",
                         method="raster_sample",
-                        caveats=[str(exc)],
+                        caveats=[unavailable or "lookup failed"],
                     )
                 )
                 continue
+            cls = cached.get("class")
             if cls is None:
                 out.append(
                     HazardResult(
@@ -110,7 +127,6 @@ class LandslideSusceptibilityModule(HazardModule):
                         caveats=[self.info.scale_note],
                     )
                 )
-        cache.flush()
         return out
 
 
@@ -230,6 +246,52 @@ class TsunamiModule(HazardModule):
         return out
 
 
+def _atlas14_grid_values(spec: Any, coords: list[tuple[float, float]]) -> list[float | None] | None:
+    """Sample the Atlas 14 Volume 6 100-yr/24-h grid locally for every coordinate.
+
+    Returns None when the grid cannot be obtained (caller falls back to the point
+    service). Values are converted from thousandths of an inch to millimetres; NoData and
+    out-of-grid points are None.
+    """
+    if not spec.download_url:
+        return None
+    raw_dir = spec.raw_dir
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dl = download_file(
+            spec.id, spec.download_url, dest=raw_dir / "sw100yr24ha.zip", expected_min_bytes=100_000
+        )
+        asc = raw_dir / "sw100yr24ha.asc"
+        if not asc.exists():
+            with zipfile.ZipFile(dl.path) as zf:
+                zf.extractall(raw_dir)
+        if not asc.exists():
+            raise SourceUnavailableError(spec.id, spec.download_url, "zip has no .asc grid")
+    except SourceUnavailableError as exc:
+        log.warning("atlas14_grid_unavailable", error=str(exc))
+        return None
+    arr, transform, nodata = _load_grid(asc)
+    out: list[float | None] = []
+    for lon, lat in coords:
+        row, col = rowcol(transform, lon, lat)
+        if row < 0 or col < 0 or row >= arr.shape[0] or col >= arr.shape[1]:
+            out.append(None)
+            continue
+        v = float(arr[row, col])
+        out.append(
+            None if (nodata is not None and v == nodata) or v < 0 else round(v / 1000.0 * 25.4, 1)
+        )
+    return out
+
+
+@lru_cache(maxsize=2)
+def _load_grid(path: Path) -> tuple[np.ndarray, Any, float | None]:
+    """The Atlas 14 grid is an ASCII (.asc) raster: windowed reads re-scan the text file,
+    so read it once (~3.6M cells, 15 MB) and index the array directly."""
+    with open_raster(path) as ds:
+        return ds.read(1), ds.transform, ds.nodata
+
+
 class ExtremeRainfallModule(HazardModule):
     info = HazardInfo(
         hazard_id="extreme_rainfall",
@@ -266,14 +328,28 @@ class ExtremeRainfallModule(HazardModule):
             return None
 
     def assess(self, session: Session, points: pd.DataFrame) -> list[HazardResult]:
-        if not self.allow_network:
-            return self.unavailable(len(points), "network lookups disabled")
         spec = load_registry().get(self.info.source_ids[0])
-        assert spec.api_url
+        coords = [(float(r.lon), float(r.lat)) for r in points.itertuples()]
+
+        # Preferred path: the downloadable Volume 6 grid, sampled locally (one 3.6 MB file
+        # replaces one web request per address). Results are written to the same point
+        # cache the service path uses, so both paths share it.
         cache = PointCache(self.info.source_ids[0])
+        missing = [c for c in coords if cache.get(*c) is None]
+        grid_vals = _atlas14_grid_values(spec, missing) if missing else []
+        method = "raster_sample"
+        if grid_vals is not None:
+            for (lon, lat), v in zip(missing, grid_vals, strict=True):
+                cache.put(lon, lat, {"depth_mm": v})
+            cache.flush()
+        elif not self.allow_network:
+            return self.unavailable(len(points), "network lookups disabled")
+        else:
+            method = "point_service"
+            assert spec.api_url
+
         out = []
-        for r in points.itertuples():
-            lon, lat = float(r.lon), float(r.lat)
+        for lon, lat in coords:
             cached = cache.get(lon, lat)
             try:
                 if cached is None:
@@ -289,7 +365,7 @@ class ExtremeRainfallModule(HazardModule):
                         self.info.name,
                         self.info.source_ids[0],
                         "unavailable",
-                        method="point_service",
+                        method=method,
                         caveats=[str(exc)],
                     )
                 )
@@ -301,7 +377,7 @@ class ExtremeRainfallModule(HazardModule):
                         self.info.name,
                         self.info.source_ids[0],
                         "unavailable",
-                        method="point_service",
+                        method=method,
                         caveats=[
                             "Atlas 14 response could not be parsed (service format may have changed)."
                         ],
@@ -318,7 +394,7 @@ class ExtremeRainfallModule(HazardModule):
                         value=round(val, 1),
                         units="mm",
                         probability_horizon=self.info.probability_horizon,
-                        method="point_service",
+                        method=method,
                         confidence="medium",
                         caveats=[self.info.scale_note],
                     )

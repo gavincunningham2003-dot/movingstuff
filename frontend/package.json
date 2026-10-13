@@ -20,6 +20,9 @@
     "react-router-dom": "6.26.2",
     "recharts": "2.12.7"
   },
+  "overrides": {
+    "@maplibre/maplibre-gl-style-spec": "20.4.0"
+  },
   "devDependencies": {
     "@types/geojson": "7946.0.14",
     "@types/papaparse": "5.3.14",

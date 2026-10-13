@@ -1,38 +1,30 @@
-import type { StyleSpecification } from 'maplibre-gl';
-
 /**
- * Free CARTO dark raster basemap (no API key).
- * MapLibre uses `{ratio}` (expands to "@2x" on high-DPI screens) rather than
- * Leaflet's `{r}` placeholder. `glyphs` is required for symbol layers with
- * text (cluster count labels); the MapLibre demo glyph server is public.
+ * Free OpenFreeMap "Fiord" dark vector basemap (no API key, no usage cap;
+ * https://openfreemap.org). CARTO's raster basemap, used previously, now serves
+ * "API KEY REQUIRED" placeholder tiles without a key. The style brings its own
+ * glyph server, so label layers must use a font it serves (Noto Sans).
  */
-export const DARK_BASEMAP: StyleSpecification = {
-  version: 8,
-  name: 'CARTO Dark Matter',
-  glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
-  sources: {
-    carto: {
-      type: 'raster',
-      tiles: ['https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{ratio}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors © CARTO',
-      maxzoom: 19,
-    },
-  },
-  layers: [
-    {
-      id: 'carto-dark',
-      type: 'raster',
-      source: 'carto',
-      minzoom: 0,
-      maxzoom: 22,
-    },
-  ],
-};
+export const DARK_BASEMAP = 'https://tiles.openfreemap.org/styles/fiord';
 
-export const LABEL_FONT = ['Open Sans Semibold'];
+export const LABEL_FONT = ['Noto Sans Regular'];
 
 export const CALIFORNIA_VIEW = { longitude: -119.5, latitude: 37.3, zoom: 5.5 };
+
+/** California extent (minLon, minLat, maxLon, maxLat). All CATRIX data lies inside it. */
+export const CALIFORNIA_BOUNDS = { west: -124.6, south: 32.4, east: -114.0, north: 42.1 };
+
+/**
+ * Clip map bounds to the California extent. The API rejects very large bounding boxes,
+ * and a zoomed-out view can span half a continent, none of which holds data.
+ */
+export function clipToCalifornia(west: number, south: number, east: number, north: number) {
+  return {
+    west: Math.max(west, CALIFORNIA_BOUNDS.west),
+    south: Math.max(south, CALIFORNIA_BOUNDS.south),
+    east: Math.min(east, CALIFORNIA_BOUNDS.east),
+    north: Math.min(north, CALIFORNIA_BOUNDS.north),
+  };
+}
 
 /** Serialise bounds to the API bbox string "minLon,minLat,maxLon,maxLat". */
 export function bboxString(west: number, south: number, east: number, north: number): string {

@@ -40,13 +40,16 @@ class DataSourceOut(BaseModel):
     verified_on: str | None = None
     verification_status: Literal["verified", "unverified", "local_only"]
     notes: str | None = None
+    page_size: int | None = None
+    planned: bool = False
+    superseded_by: str | None = None
     # Filled from the database when an ingestion has run:
     last_ingested_at: datetime | None = None
     record_count: int | None = None
     version: str | None = None
-    ingestion_status: Literal["ingested", "never_ingested", "failed", "unavailable"] = (
-        "never_ingested"
-    )
+    ingestion_status: Literal[
+        "ingested", "never_ingested", "failed", "unavailable", "planned", "superseded"
+    ] = "never_ingested"
 
 
 # --------------------------------------------------------------------------- hazards
@@ -150,6 +153,22 @@ class CompositeScoreOut(BaseModel):
     missing_hazards: list[str]
     weights_note: str
     method_version: str
+
+
+class PointAssessmentOut(BaseModel):
+    """On-demand assessment of an arbitrary coordinate (map click / API query): the same
+    hazard contract, screening index and model output a stored property gets, computed live
+    and not persisted."""
+
+    lon: float
+    lat: float
+    county_fips: str | None = None
+    county: str | None = None
+    in_california: bool
+    hazards: list[HazardAssessmentOut]
+    prediction: WildfirePredictionOut | None = None
+    score: CompositeScoreOut
+    assessed_at: datetime
 
 
 class WildfirePredictionOut(BaseModel):
@@ -336,6 +355,23 @@ class ModelMetricsOut(BaseModel):
     shap_summary: list[dict[str, Any]]
     geographic_performance: list[dict[str, Any]]
     is_selected: bool
+    # Alternative thresholds chosen on validation, each with confusion counts on every split.
+    operating_points: list[dict[str, Any]] = Field(default_factory=list)
+    # Confusion counts at thresholds flagging 0.1 %...50 % of rows, per split.
+    threshold_sweep: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+
+
+class ModelVersionSummaryOut(BaseModel):
+    version: str
+    trained_at: datetime | None = None
+    selected_model: str | None = None
+    target: str = "inside"
+    target_definition: str
+    dataset_version: str | None = None
+    excluded_features: list[str] = Field(default_factory=list)
+    n_features: int
+    status: str
+    is_latest: bool
 
 
 class ModelsMetricsResponse(BaseModel):
@@ -345,6 +381,10 @@ class ModelsMetricsResponse(BaseModel):
     limitations: list[str]
     status: Literal["available", "not_trained", "insufficient_data"]
     status_detail: str | None = None
+    version: str | None = None
+    target: str | None = None
+    excluded_features: list[str] = Field(default_factory=list)
+    is_latest: bool = True
 
 
 # --------------------------------------------------------------------------- data quality

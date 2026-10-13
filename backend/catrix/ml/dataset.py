@@ -94,6 +94,9 @@ class DatasetSpec:
     test_years: tuple[int, int]
     spatial_holdout_fraction: float = 0.15
     version: str = DATASET_VERSION
+    # "inside": address point inside a perimeter of year T+1 (default).
+    # "within_1km": a perimeter of year T+1 within 1 km of the point (softer target).
+    target: str = "inside"
 
 
 DEFAULT_SPEC = DatasetSpec(
@@ -102,6 +105,17 @@ DEFAULT_SPEC = DatasetSpec(
     val_years=(2015, 2018),
     test_years=(2019, 2023),
 )
+
+WITHIN_1KM_SPEC = DatasetSpec(
+    feature_years=(1995, 2023),
+    train_years=(1995, 2014),
+    val_years=(2015, 2018),
+    test_years=(2019, 2023),
+    version="wf-ly-1km-1.0",
+    target="within_1km",
+)
+
+SPECS = {"inside": DEFAULT_SPEC, "within_1km": WITHIN_1KM_SPEC}
 
 
 def collect_perimeter_neighbours(session: Session, batch: int = 500) -> pd.DataFrame:
@@ -181,7 +195,11 @@ def build_location_year_table(
     con.register("st", static)
     years = pd.DataFrame({"T": list(range(y0, y1 + 1))})
     con.register("yrs", years)
-    sql = """
+    label_expr = {
+        "inside": "nb.inside AND nb.year = g.T + 1",
+        "within_1km": "nb.distance_m <= 1000 AND nb.year = g.T + 1",
+    }[spec.target]
+    sql = f"""
     WITH grid AS (SELECT st.address_id, yrs.T FROM st CROSS JOIN yrs),
     feats AS (
       SELECT g.address_id, g.T,
@@ -193,7 +211,7 @@ def build_location_year_table(
         CAST(bool_or(nb.inside AND nb.year <= g.T) AS INTEGER)                                     AS ever_inside_perimeter,
         coalesce(sum(nb.gis_acres) FILTER (WHERE nb.year <= g.T AND nb.year > g.T-5 AND nb.distance_m <= 5000), 0) AS acres_5km_5y,
         min(nb.distance_m) FILTER (WHERE nb.year <= g.T)                                           AS dist_nearest_perim_m,
-        CAST(bool_or(nb.inside AND nb.year = g.T + 1) AS INTEGER)                                  AS label
+        CAST(bool_or({label_expr}) AS INTEGER)                                                   AS label
       FROM grid g LEFT JOIN nb ON nb.address_id = g.address_id
       GROUP BY g.address_id, g.T
     )

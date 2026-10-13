@@ -24,7 +24,20 @@ def list_data_sources(db: DB) -> list[DataSourceOut]:
                 last_ingested_at=row.retrieved_at if row else None,
                 record_count=row.record_count if row else None,
                 version=row.version if row else None,
-                ingestion_status=(row.ingestion_status if row else "never_ingested"),  # type: ignore[arg-type]
+                ingestion_status=_status(s, row),  # type: ignore[arg-type]
             )
         )
     return out
+
+
+def _status(spec, row) -> str:
+    """A registry entry without a connector shows 'planned' (or 'superseded') unless an
+    ingestion has actually run for it; a bare database row with the default
+    'never_ingested' status does not count as one."""
+    if row is not None and row.ingestion_status != "never_ingested":
+        return str(row.ingestion_status)
+    if spec.superseded_by:
+        return "superseded"
+    if spec.planned:
+        return "planned"
+    return "never_ingested"

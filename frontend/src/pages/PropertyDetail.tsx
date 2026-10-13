@@ -124,12 +124,17 @@ function CompositeScoreCard({ detail }: { detail: PropertyDetailOut }) {
   const contributions = score.contributions
     .map((c) => {
       const name = String(c.hazard_id ?? c.hazard ?? c['name'] ?? 'unknown');
+      // The composite returns weighted_points / family_weight; older shapes used
+      // contribution / weight.
+      const weight = isNum(c.weight) ? c.weight : isNum(c.family_weight) ? c.family_weight : null;
       const value = isNum(c.contribution)
         ? c.contribution
-        : isNum(c.weight) && isNum(c.normalised)
-          ? c.weight * c.normalised
-          : null;
-      return { name, value, weight: isNum(c.weight) ? c.weight : null };
+        : isNum(c.weighted_points)
+          ? c.weighted_points
+          : weight !== null && isNum(c.normalised)
+            ? weight * c.normalised
+            : null;
+      return { name, value, weight };
     })
     .sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity));
   const maxAbs = Math.max(1e-9, ...contributions.map((c) => Math.abs(c.value ?? 0)));

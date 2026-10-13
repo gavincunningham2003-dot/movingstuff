@@ -174,7 +174,9 @@ def acquire_files(counties: list[str] | None, force: bool) -> tuple[list[Path], 
     local = sorted(
         p
         for p in raw_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in (".csv", ".gz", ".geojson", ".json")
+        if p.is_file()
+        and p.suffix.lower() in (".csv", ".gz", ".geojson", ".json")
+        and not p.name.endswith(".meta.json")
     )
     if local and not force:
         return local, f"local files in {raw_dir}"

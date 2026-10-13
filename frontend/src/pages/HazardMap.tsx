@@ -15,9 +15,9 @@ import Map, {
 } from 'react-map-gl/maplibre';
 import { Link } from 'react-router-dom';
 
-import { useHazardGeojson, useHazardsCatalogue, usePropertiesGeojson, usePropertyCounties } from '../api/hooks';
+import { useHazardGeojson, useHazardsCatalogue, usePointAssessment, usePropertiesGeojson, usePropertyCounties } from '../api/hooks';
 import type { HazardLayerFeatureCollection, LegendEntry, PropertyFeatureCollection, PropertyFeatureProperties } from '../api/types';
-import { bboxString, CALIFORNIA_VIEW, DARK_BASEMAP, LABEL_FONT } from '../components/map/basemap';
+import { bboxString, CALIFORNIA_VIEW, clipToCalifornia, DARK_BASEMAP, LABEL_FONT } from '../components/map/basemap';
 import {
   expr,
   legendFillExpression,
@@ -27,6 +27,7 @@ import {
   type PointColorBy,
 } from '../components/map/expressions';
 import { Badge, FloodZoneBadge, WildfireBadge } from '../components/ui/Badge';
+import { PointAssessmentCard } from '../components/map/PointAssessmentCard';
 import { CaveatBanner } from '../components/ui/CaveatBanner';
 import { ErrorState } from '../components/ui/ErrorState';
 import { Field, Select, Toggle } from '../components/ui/Inputs';
@@ -135,6 +136,8 @@ export function HazardMap() {
     fire_perimeters: false,
   });
   const [selected, setSelected] = useState<SelectedProperty | null>(null);
+  const [clicked, setClicked] = useState<{ lon: number; lat: number } | null>(null);
+  const pointQ = usePointAssessment(clicked);
   const [hovering, setHovering] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
 
@@ -163,16 +166,20 @@ export function HazardMap() {
     const map = mapRef.current?.getMap();
     if (!map) return;
     const b = map.getBounds();
-    setBbox(bboxString(b.getWest(), b.getSouth(), b.getEast(), b.getNorth()));
+    const c = clipToCalifornia(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
+    setBbox(bboxString(c.west, c.south, c.east, c.north));
     setZoom(map.getZoom());
   }, []);
 
   const onClick = useCallback((e: MapLayerMouseEvent) => {
     const f = e.features?.[0];
     if (!f) {
+      // Empty map: assess the clicked coordinate on demand.
       setSelected(null);
+      setClicked({ lon: e.lngLat.lng, lat: e.lngLat.lat });
       return;
     }
+    setClicked(null);
     const map = mapRef.current?.getMap();
     const coords = (f.geometry as Point).coordinates;
     if (f.layer.id === 'clusters') {
@@ -257,6 +264,24 @@ export function HazardMap() {
             <Layer {...clusterCountLayer} />
           </Source>
 
+          {clicked && (
+            <Popup
+              longitude={clicked.lon}
+              latitude={clicked.lat}
+              onClose={() => setClicked(null)}
+              closeOnClick={false}
+              maxWidth="380px"
+            >
+              <PointAssessmentCard
+                lon={clicked.lon}
+                lat={clicked.lat}
+                data={pointQ.data}
+                isLoading={pointQ.isLoading}
+                error={pointQ.error}
+              />
+            </Popup>
+          )}
+
           {selected && (
             <Popup
               longitude={selected.lon}
@@ -296,7 +321,7 @@ export function HazardMap() {
         {/* Status overlay */}
         <div className="pointer-events-none absolute bottom-6 left-2 flex flex-col gap-1 text-xs">
           <div className="pointer-events-auto rounded border border-slate-700 bg-slate-900/90 px-2 py-1 text-slate-300">
-            Zoom {zoom.toFixed(1)} · {pointsEnabled ? `${fmtInt(nPoints)} points loaded` : `zoom to ${MIN_POINT_ZOOM}+ to load points`}
+            Zoom {zoom.toFixed(1)} · {pointsEnabled ? `${fmtInt(nPoints)} points loaded` : `zoom to ${MIN_POINT_ZOOM}+ to load points`} · click anywhere to assess that spot
             {pointsQ.isFetching && pointsEnabled && <span className="ml-2 text-teal-300">loading…</span>}
           </div>
           {nPoints >= POINT_LIMIT && (

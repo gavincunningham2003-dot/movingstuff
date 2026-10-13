@@ -40,10 +40,18 @@ export function usePortfolioSummary() {
   });
 }
 
-export function useModelsMetrics() {
+export function useModelsMetrics(version?: string) {
   return useQuery({
-    queryKey: queryKeys.modelsMetrics,
-    queryFn: ({ signal }) => api.modelsMetrics(signal),
+    queryKey: [...queryKeys.modelsMetrics, version ?? 'latest'] as const,
+    queryFn: ({ signal }) => api.modelsMetrics(version, signal),
+  });
+}
+
+export function useModelVersions() {
+  return useQuery({
+    queryKey: ['models', 'versions'] as const,
+    queryFn: ({ signal }) => api.modelVersions(signal),
+    staleTime: 60 * 1000,
   });
 }
 
@@ -155,5 +163,15 @@ export function useDataQuality() {
   return useQuery({
     queryKey: queryKeys.dataQuality,
     queryFn: ({ signal }) => api.dataQuality(signal),
+  });
+}
+
+/** On-demand assessment of a clicked coordinate (not persisted server-side). */
+export function usePointAssessment(point: { lon: number; lat: number } | null) {
+  return useQuery({
+    queryKey: ['hazards', 'point', point?.lon ?? null, point?.lat ?? null] as const,
+    queryFn: ({ signal }) => api.pointAssessment(point!.lon, point!.lat, signal),
+    enabled: point !== null,
+    staleTime: 5 * 60 * 1000,
   });
 }

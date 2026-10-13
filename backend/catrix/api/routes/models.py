@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from catrix.api.deps import DB
-from catrix.api.schemas import ModelMetricsOut, ModelsMetricsResponse
+from catrix.api.schemas import ModelMetricsOut, ModelsMetricsResponse, ModelVersionSummaryOut
 from catrix.config import get_settings
 from catrix.db.models import ModelVersion
 
@@ -25,18 +26,71 @@ LIMITATIONS = [
 ]
 
 
-def _latest_metrics_doc() -> dict[str, Any] | None:
+def _latest_version() -> str | None:
+    latest = get_settings().models_dir / "LATEST"
+    return latest.read_text(encoding="utf-8").strip() if latest.exists() else None
+
+
+def _metrics_doc(version: str | None = None) -> dict[str, Any] | None:
     md = get_settings().models_dir
-    latest = md / "LATEST"
-    if not latest.exists():
+    ver = version or _latest_version()
+    if not ver:
         return None
-    p: Path = md / latest.read_text(encoding="utf-8").strip() / "metrics.json"
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+    p: Path = md / ver / "metrics.json"
+    if not p.exists():
+        return None
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    doc.setdefault("version", ver)
+    return doc
+
+
+def _latest_metrics_doc() -> dict[str, Any] | None:
+    return _metrics_doc(None)
+
+
+@router.get("/versions", response_model=list[ModelVersionSummaryOut])
+def model_versions() -> list[ModelVersionSummaryOut]:
+    """Every training run under data/models, newest first; ``is_latest`` marks the run the
+    API, the map and ``catrix ml predict`` use."""
+    md = get_settings().models_dir
+    latest = _latest_version()
+    out: list[ModelVersionSummaryOut] = []
+    if not md.exists():
+        return out
+    for d in sorted(md.iterdir(), reverse=True):
+        p = d / "metrics.json"
+        if not d.is_dir() or not p.exists():
+            continue
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        out.append(
+            ModelVersionSummaryOut(
+                version=d.name,
+                trained_at=datetime.fromisoformat(doc["trained_at"])
+                if doc.get("trained_at")
+                else None,
+                selected_model=doc.get("selected_model"),
+                target=doc.get("target", "inside"),
+                target_definition=doc.get("target_definition", ""),
+                dataset_version=doc.get("dataset_version"),
+                excluded_features=doc.get("excluded_features", []),
+                n_features=len(doc.get("feature_list", [])),
+                status=doc.get("status", "unknown"),
+                is_latest=d.name == latest,
+            )
+        )
+    return out
 
 
 @router.get("/metrics", response_model=ModelsMetricsResponse)
-def model_metrics(db: DB) -> ModelsMetricsResponse:
-    doc = _latest_metrics_doc()
+def model_metrics(
+    db: DB,
+    version: str | None = Query(None, description="A training run id; default: the latest"),
+) -> ModelsMetricsResponse:
+    if version is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", version):
+        raise HTTPException(422, "invalid version id")
+    doc = _metrics_doc(version)
+    if version is not None and doc is None:
+        raise HTTPException(404, f"no training run {version!r}")
     if doc is None:
         return ModelsMetricsResponse(
             models=[],
@@ -88,6 +142,8 @@ def model_metrics(db: DB) -> ModelsMetricsResponse:
                 pr_curve=t["pr_curve"],
                 calibration=t["calibration"],
                 feature_importance=m.get("feature_importance", []),
+                operating_points=m.get("operating_points", []),
+                threshold_sweep=m.get("threshold_sweep", {}),
                 shap_summary=m.get("shap_summary", []),
                 geographic_performance=m.get("geographic_performance", []),
                 is_selected=bool(m.get("is_selected")),
@@ -98,6 +154,10 @@ def model_metrics(db: DB) -> ModelsMetricsResponse:
     ).first()  # touch DB so a missing DB surfaces as 503 consistently
     return ModelsMetricsResponse(
         models=models,
+        version=doc.get("version"),
+        target=doc.get("target", "inside"),
+        excluded_features=doc.get("excluded_features", []),
+        is_latest=doc.get("version") == _latest_version(),
         selected_model=doc.get("selected_model"),
         feature_list=doc["feature_list"],
         limitations=[*LIMITATIONS, *([doc["status_detail"]] if doc.get("status_detail") else [])],

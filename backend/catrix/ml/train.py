@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +34,17 @@ from catrix.config import get_settings
 from catrix.db.models import ModelVersion
 from catrix.logging import get_logger
 from catrix.ml.dataset import DEFAULT_SPEC, DatasetSpec, feature_columns, leakage_checks
-from catrix.ml.evaluate import choose_threshold, evaluate, geographic_performance
+from catrix.ml.evaluate import (
+    OPERATING_POINT_LABELS,
+    SHARE_POINTS,
+    choose_threshold,
+    confusion_at,
+    confusion_top_share,
+    evaluate,
+    geographic_performance,
+    operating_points,
+    threshold_sweep,
+)
 from catrix.ml.explain import shap_summary
 from catrix.ml.optional_features import describe_optional
 
@@ -44,6 +55,15 @@ TARGET_DEFINITION = (
     "given features observable through 31 Dec of year T. Measures mapped perimeter exposure, "
     "not building damage."
 )
+TARGET_DEFINITIONS = {
+    "inside": TARGET_DEFINITION,
+    "within_1km": (
+        "Binary: at least one CAL FIRE FRAP fire perimeter with YEAR_ = T+1 lies within 1 km of the "
+        "address point, given features observable through 31 Dec of year T. A softer, "
+        "proximity-based exposure target with roughly an order of magnitude more positives than "
+        "the inside-perimeter target; still mapped-perimeter exposure, not damage."
+    ),
+}
 MIN_POSITIVES = 100
 
 
@@ -84,13 +104,19 @@ class TrainedModel:
             p = self.calibrator.predict(p)
         return np.clip(p, 0.0, 1.0)
 
+    def raw_scores(self, X: pd.DataFrame) -> np.ndarray:
+        """Uncalibrated scores, for ranking (the calibrated probabilities are tied in steps)."""
+        return np.asarray(self.estimator.predict_proba(X)[:, 1], dtype=float)
+
 
 def _pos_weight(y: np.ndarray) -> float:
     pos = max(int(y.sum()), 1)
     return float((len(y) - pos) / pos)
 
 
-def _candidates(seed: int, pos_weight: float) -> dict[str, list[tuple[str, Any, dict[str, Any]]]]:
+def _candidates(
+    seed: int, pos_weight: float, device: str = "cpu"
+) -> dict[str, list[tuple[str, Any, dict[str, Any]]]]:
     """Model name → list of (algorithm, estimator, params) to try on validation."""
     from xgboost import XGBClassifier
 
@@ -151,6 +177,7 @@ def _candidates(seed: int, pos_weight: float) -> dict[str, list[tuple[str, Any, 
                 objective="binary:logistic",
                 eval_metric="aucpr",
                 tree_method="hist",
+                device=device,
                 random_state=seed,
                 n_jobs=-1,
             ),
@@ -167,15 +194,22 @@ def train_all(
     *,
     session: Session | None = None,
     version: str | None = None,
+    exclude_features: Iterable[str] | None = None,
+    set_latest: bool = True,
 ) -> dict[str, Any]:
-    """Train, select and evaluate. Returns the metrics document (also written to disk)."""
+    """Train, select and evaluate. Returns the metrics document (also written to disk).
+
+    ``exclude_features`` drops columns from the feature set (e.g. the ``*_version_lag_years``
+    anachronism flags, which double as a calendar-year proxy). ``set_latest=False`` records
+    the run without making it the model the API and ``catrix ml predict`` use."""
     settings = get_settings()
     seed = settings.random_seed
     np.random.seed(seed)
     problems = leakage_checks(df)
     if problems:
         raise ValueError(f"leakage checks failed: {problems}")
-    feats = feature_columns(df)
+    excluded = sorted(set(exclude_features or ()))
+    feats = [f for f in feature_columns(df) if f not in excluded]
     train, val, test, stest = (
         df[df["split"] == s] for s in ("train", "val", "test", "spatial_test")
     )
@@ -183,7 +217,11 @@ def train_all(
     doc: dict[str, Any] = {
         "dataset_version": spec.version,
         "feature_list": feats,
-        "target_definition": TARGET_DEFINITION,
+        "target_definition": TARGET_DEFINITIONS.get(
+            getattr(spec, "target", "inside"), TARGET_DEFINITION
+        ),
+        "target": getattr(spec, "target", "inside"),
+        "excluded_features": excluded,
         "train_period": f"{spec.train_years[0]}-{spec.train_years[1]} (targets {spec.train_years[0]+1}-{spec.train_years[1]+1})",
         "validation_period": f"{spec.val_years[0]}-{spec.val_years[1]} (targets {spec.val_years[0]+1}-{spec.val_years[1]+1})",
         "test_period": f"{spec.test_years[0]}-{spec.test_years[1]} (targets {spec.test_years[0]+1}-{spec.test_years[1]+1})",
@@ -208,7 +246,7 @@ def train_all(
             f"CATRIX requires at least {MIN_POSITIVES} training positives and 10 test positives before reporting a supervised model. "
             "Increase the address sample, extend the feature-year range, or sample more fire-prone counties."
         )
-        _write_metrics(doc, version or f"wf-{datetime.now(UTC):%Y%m%d%H%M}")
+        _write_metrics(doc, version or f"wf-{datetime.now(UTC):%Y%m%d%H%M}", set_latest=set_latest)
         return doc
 
     Xtr, ytr = train[feats], train["label"].to_numpy()
@@ -230,7 +268,7 @@ def train_all(
     results.append((tm, _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)))
 
     # Candidates: pick the best params per family by validation PR-AUC ----------------
-    for family, cands in _candidates(seed, pos_w).items():
+    for family, cands in _candidates(seed, pos_w, settings.ml_device).items():
         best: tuple[float, TrainedModel] | None = None
         for algo, est, params in cands:
             est.fit(Xtr, ytr)
@@ -273,8 +311,9 @@ def train_all(
         doc["models"].append(d)
     doc["selected_model"] = selected[0].name
     doc["version"] = ver
-    _write_metrics(doc, ver)
-    if session is not None:
+    doc["is_latest"] = set_latest
+    _write_metrics(doc, ver, set_latest=set_latest)
+    if session is not None and set_latest:
         _persist_versions(session, doc)
     return doc
 
@@ -290,19 +329,52 @@ def _evaluate_model(
     feats: list[str],
 ) -> dict[str, Any]:
     p_te = tm.predict_proba(Xte)
+    p_va = tm.predict_proba(Xva)
     d: dict[str, Any] = {
         "name": tm.name,
         "algorithm": tm.algorithm,
         "params": tm.params,
         "threshold": tm.threshold,
-        "validation": evaluate(yva, tm.predict_proba(Xva), tm.threshold),
+        "validation": evaluate(yva, p_va, tm.threshold),
         "test": evaluate(yte, p_te, tm.threshold),
         "geographic_performance": geographic_performance(test, p_te, "county_fips"),
     }
-    if len(stest):
-        d["spatial_test"] = evaluate(
-            stest["label"].to_numpy(), tm.predict_proba(stest[feats]), tm.threshold
-        )
+    ys = stest["label"].to_numpy() if len(stest) else None
+    ps = tm.predict_proba(stest[feats]) if len(stest) else None
+    if ps is not None:
+        d["spatial_test"] = evaluate(ys, ps, tm.threshold)
+    # Alternative operating points (all chosen on validation) and a flagged-share sweep so
+    # the dashboard can show the confusion matrix at any threshold.
+    # Raw (uncalibrated) scores rank rows with far fewer ties than the isotonic
+    # probabilities, so share-based points flag exactly the share they promise.
+    r_va, r_te = tm.raw_scores(Xva), tm.raw_scores(Xte)
+    r_s = tm.raw_scores(stest[feats]) if ps is not None else None
+    ops = operating_points(yva, p_va)
+    d["operating_points"] = [
+        {
+            "name": name,
+            "label": OPERATING_POINT_LABELS.get(name, name),
+            "threshold": thr,
+            "validation": confusion_at(yva, p_va, thr),
+            "test": confusion_at(yte, p_te, thr),
+            **({"spatial_test": confusion_at(ys, ps, thr)} if ps is not None else {}),
+        }
+        for name, thr in ops.items()
+    ] + [
+        {
+            "name": name,
+            "label": OPERATING_POINT_LABELS.get(name, name),
+            "threshold": confusion_top_share(yte, p_te, r_te, share)["threshold"],
+            "validation": confusion_top_share(yva, p_va, r_va, share),
+            "test": confusion_top_share(yte, p_te, r_te, share),
+            **({"spatial_test": confusion_top_share(ys, ps, r_s, share)} if ps is not None else {}),
+        }
+        for name, share in SHARE_POINTS
+    ]
+    d["threshold_sweep"] = {
+        "test": threshold_sweep(yte, p_te, r_te),
+        **({"spatial_test": threshold_sweep(ys, ps, r_s)} if ps is not None else {}),
+    }
     d["feature_importance"] = feature_importance(tm, feats)
     try:
         d["shap_summary"] = shap_summary(tm, Xte, feats, max_rows=2000)
@@ -332,13 +404,14 @@ def feature_importance(tm: TrainedModel, feats: list[str]) -> list[dict[str, Any
     )
 
 
-def _write_metrics(doc: dict[str, Any], version: str) -> Path:
+def _write_metrics(doc: dict[str, Any], version: str, *, set_latest: bool = True) -> Path:
     settings = get_settings()
     out_dir = settings.models_dir / version
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / "metrics.json"
     p.write_text(json.dumps(doc, indent=2, default=float), encoding="utf-8")
-    (settings.models_dir / "LATEST").write_text(version, encoding="utf-8")
+    if set_latest:
+        (settings.models_dir / "LATEST").write_text(version, encoding="utf-8")
     return p
 
 

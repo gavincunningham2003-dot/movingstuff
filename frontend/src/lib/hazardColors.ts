@@ -49,6 +49,9 @@ export function wildfireClassColor(cls: string | null | undefined): string {
 export function isSfhaZone(zone: string | null | undefined): boolean {
   const z = (zone ?? '').trim().toUpperCase();
   if (!z) return false;
+  // The flood module labels classes descriptively ("Special Flood Hazard Area (1% annual
+  // chance)"); raw FEMA zone codes (A, AE, V, ...) are matched below.
+  if (z.includes('SPECIAL FLOOD HAZARD')) return true;
   if (z.startsWith('A') || z.startsWith('V')) return true;
   return z === 'SFHA' || z === 'IN_SFHA';
 }

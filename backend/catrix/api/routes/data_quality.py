@@ -43,7 +43,9 @@ def data_quality(db: DB) -> DataQualityOut:
     for s in reg.sources:
         row = state.get(s.id)
         status = row.ingestion_status if row else "never_ingested"
-        if status in ("unavailable", "failed") or (
+        if s.planned or s.superseded_by:
+            status = "superseded" if s.superseded_by else "planned"
+        elif status in ("unavailable", "failed") or (
             status == "never_ingested" and s.verification_status != "verified"
         ):
             unavailable.append(s.id)
@@ -79,7 +81,8 @@ def data_quality(db: DB) -> DataQualityOut:
         {
             "source_id": r.id,
             "error": r.error,
-            "at": r.retrieved_at.isoformat() if r.retrieved_at else None,
+            "at": (r.extra or {}).get("failed_at")
+            or (r.retrieved_at.isoformat() if r.retrieved_at else None),
         }
         for r in state.values()
         if r.error

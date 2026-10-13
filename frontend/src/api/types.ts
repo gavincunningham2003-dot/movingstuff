@@ -19,9 +19,11 @@ export interface HealthResponse {
 }
 
 export type VerificationStatus = 'verified' | 'unverified' | 'local_only';
-export type IngestionStatus = 'ingested' | 'never_ingested' | 'failed' | 'unavailable';
+export type IngestionStatus = 'ingested' | 'never_ingested' | 'failed' | 'unavailable' | 'planned' | 'superseded';
 
 export interface DataSourceOut {
+  planned?: boolean;
+  superseded_by?: string | null;
   id: string;
   name: string;
   provider: string;
@@ -145,8 +147,10 @@ export interface ScoreContribution {
   hazard_id?: string;
   hazard?: string;
   weight?: number | null;
+  family_weight?: number | null;
   normalised?: number | null;
   contribution?: number | null;
+  weighted_points?: number | null;
   [key: string]: unknown;
 }
 
@@ -207,6 +211,18 @@ export interface PropertyDetailOut extends PropertySummaryOut {
   score?: CompositeScoreOut | null;
   coverage: Record<string, CoverageStatus>;
   financial?: FinancialScenarioSetOut | null;
+}
+
+export interface PointAssessmentOut {
+  lon: number;
+  lat: number;
+  county_fips?: string | null;
+  county?: string | null;
+  in_california: boolean;
+  hazards: HazardAssessmentOut[];
+  prediction?: WildfirePredictionOut | null;
+  score: CompositeScoreOut;
+  assessed_at: string;
 }
 
 export interface PagedProperties {
@@ -425,6 +441,47 @@ export interface ModelMetricsOut {
   shap_summary: Record<string, unknown>[];
   geographic_performance: Record<string, unknown>[];
   is_selected: boolean;
+  operating_points?: OperatingPoint[];
+  threshold_sweep?: Record<string, SweepPoint[]>;
+}
+
+export interface ConfusionAt {
+  threshold: number;
+  tp: number;
+  fp: number;
+  fn: number;
+  tn: number;
+  flagged_share: number;
+  precision: number | null;
+  recall: number | null;
+  specificity: number | null;
+  lift?: number | null;
+}
+
+export interface SweepPoint extends ConfusionAt {
+  target_share: number;
+}
+
+export interface OperatingPoint {
+  name: string;
+  label: string;
+  threshold: number;
+  validation: ConfusionAt;
+  test: ConfusionAt;
+  spatial_test?: ConfusionAt;
+}
+
+export interface ModelVersionSummary {
+  version: string;
+  trained_at: string | null;
+  selected_model: string | null;
+  target: string;
+  target_definition: string;
+  dataset_version: string | null;
+  excluded_features: string[];
+  n_features: number;
+  status: string;
+  is_latest: boolean;
 }
 
 export type ModelsStatus = 'available' | 'not_trained' | 'insufficient_data';
@@ -435,7 +492,10 @@ export interface ModelsMetricsResponse {
   feature_list: string[];
   limitations: string[];
   status: ModelsStatus;
-  status_detail?: string | null;
+  status_detail?: string | null;  version?: string | null;
+  target?: string | null;
+  excluded_features?: string[];
+  is_latest?: boolean;
 }
 
 // --------------------------------------------------------------------------- data quality

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "catrix"
 version = "0.1.0"
 description = "CATRIX — California Catastrophe Risk Intelligence Platform (backend)"
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
@@ -36,6 +36,7 @@ dependencies = [
   "pyyaml>=6.0,<7",
   "python-multipart>=0.0.9,<0.1",
   "typer>=0.12,<0.13",
+  "click>=8.1,<8.2",
   "tenacity>=8.5,<9",
 ]
 

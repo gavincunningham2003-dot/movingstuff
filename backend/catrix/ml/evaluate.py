@@ -56,6 +56,113 @@ def choose_threshold(y_val: np.ndarray, p_val: np.ndarray) -> float:
     return float(thr[int(np.nanargmax(f1))])
 
 
+SWEEP_SHARES = (0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
+
+
+def confusion_at(y: np.ndarray, p: np.ndarray, threshold: float) -> dict[str, Any]:
+    """Counts and rates at one threshold (flagged = p >= threshold)."""
+    y = np.asarray(y).astype(int)
+    p = np.asarray(p).astype(float)
+    pred = (p >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y, pred, labels=[0, 1]).ravel()
+    n = max(len(y), 1)
+    return {
+        "threshold": float(threshold),
+        "tp": int(tp),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tn": int(tn),
+        "flagged_share": float((tp + fp) / n),
+        "precision": float(tp / (tp + fp)) if tp + fp else None,
+        "recall": float(tp / (tp + fn)) if tp + fn else None,
+        "specificity": float(tn / (tn + fp)) if tn + fp else None,
+        "lift": float((tp / (tp + fp)) / (y.mean() or 1e-12)) if tp + fp and y.mean() else None,
+    }
+
+
+def confusion_top_share(
+    y: np.ndarray, p: np.ndarray, rank_score: np.ndarray, share: float
+) -> dict[str, Any]:
+    """Flag exactly the top ``share`` of rows by ``rank_score`` (the uncalibrated model
+    score, which has far fewer ties than isotonic-calibrated probabilities) and report the
+    counts; ``threshold`` is the smallest calibrated probability among the flagged rows."""
+    y = np.asarray(y).astype(int)
+    p = np.asarray(p).astype(float)
+    r = np.asarray(rank_score).astype(float)
+    n = len(y)
+    k = int(round(n * share))
+    flagged = np.zeros(n, dtype=bool)
+    if k > 0:
+        order = np.argsort(-r, kind="stable")
+        flagged[order[:k]] = True
+    tp = int((flagged & (y == 1)).sum())
+    fp = int((flagged & (y == 0)).sum())
+    fn = int((~flagged & (y == 1)).sum())
+    tn = int((~flagged & (y == 0)).sum())
+    prev = y.mean() if n else 0.0
+    return {
+        "threshold": float(p[flagged].min()) if k > 0 else float(p.max() if n else 1.0),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "flagged_share": float(k / n) if n else 0.0,
+        "precision": float(tp / (tp + fp)) if tp + fp else None,
+        "recall": float(tp / (tp + fn)) if tp + fn else None,
+        "specificity": float(tn / (tn + fp)) if tn + fp else None,
+        "lift": float((tp / (tp + fp)) / prev) if tp + fp and prev else None,
+    }
+
+
+def threshold_sweep(
+    y: np.ndarray, p: np.ndarray, rank_score: np.ndarray | None = None
+) -> list[dict[str, Any]]:
+    """Confusion counts when flagging a fixed share of rows (0.1 % ... 50 %), ranked by the
+    raw score when given, so the dashboard can show any operating point."""
+    p = np.asarray(p).astype(float)
+    if len(p) == 0:
+        return []
+    r = p if rank_score is None else np.asarray(rank_score).astype(float)
+    out = []
+    for share in SWEEP_SHARES:
+        row = confusion_top_share(y, p, r, share)
+        row["target_share"] = share
+        out.append(row)
+    return out
+
+
+def operating_points(y_val: np.ndarray, p_val: np.ndarray) -> dict[str, float]:
+    """Named probability thresholds chosen on the validation set only: the F1-optimal point
+    and points that reach a target recall. Share-based points ('flag the riskiest N %') are
+    handled by rank, see :func:`confusion_top_share`."""
+    pts = {"f1_validation": choose_threshold(y_val, p_val)}
+    p_val = np.asarray(p_val).astype(float)
+    prec, rec, thr = precision_recall_curve(y_val, p_val)
+    for name, target in (("recall_25", 0.25), ("recall_50", 0.5), ("recall_75", 0.75)):
+        idx = np.where(rec[:-1] >= target)[0]
+        if len(thr) == 0:
+            pts[name] = 0.5
+        elif len(idx) == 0:
+            pts[name] = float(thr.min())
+        else:
+            pts[name] = float(thr[idx].max())
+    return pts
+
+
+SHARE_POINTS = (("top_1pct", 0.01), ("top_5pct", 0.05), ("top_10pct", 0.10))
+
+
+OPERATING_POINT_LABELS = {
+    "f1_validation": "F1-optimal on validation",
+    "recall_25": "Recall >= 25 % on validation",
+    "recall_50": "Recall >= 50 % on validation",
+    "recall_75": "Recall >= 75 % on validation",
+    "top_1pct": "Flag the riskiest 1 %",
+    "top_5pct": "Flag the riskiest 5 %",
+    "top_10pct": "Flag the riskiest 10 %",
+}
+
+
 def evaluate(y: np.ndarray, p: np.ndarray, threshold: float) -> dict[str, Any]:
     y = np.asarray(y).astype(int)
     p = np.asarray(p).astype(float)
