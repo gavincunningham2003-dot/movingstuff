@@ -1,0 +1,73 @@
+# CATRIX local stack. Start with:  docker compose up --build
+# This file is provided for deployment; nothing here is started automatically.
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: catrix
+      POSTGRES_PASSWORD: catrix
+      POSTGRES_DB: catrix
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catrix -d catrix"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      CATRIX_DATABASE_URL: postgresql+psycopg://catrix:catrix@db:5432/catrix
+      CATRIX_DATA_DIR: /data
+      CATRIX_LOG_JSON: "true"
+    volumes:
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn catrix.api.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: ./backend
+    environment:
+      CATRIX_DATABASE_URL: postgresql+psycopg://catrix:catrix@db:5432/catrix
+      CATRIX_DATA_DIR: /data
+      CATRIX_LOG_JSON: "true"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python -m catrix.pipeline.worker
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow:/mlflow
+    ports:
+      - "5000:5000"
+    profiles: ["mlflow"]
+
+volumes:
+  pgdata:
+  mlflow:

@@ -1,0 +1,471 @@
+# CATRIX dataset registry — provenance, verification and version metadata.
+#
+# verification_status values:
+#   verified      : endpoint reached from the development environment on `verified_on`
+#                   and the listed fields were confirmed from the service metadata.
+#   unverified    : endpoint documented by the provider but NOT reachable from the
+#                   development environment (reason in `notes`). Connector is implemented
+#                   against the provider's published schema and must be validated on first run.
+#   local_only    : no stable programmatic download; the user must download manually and
+#                   place the file under data/raw/<id>/ (instructions in `notes`).
+#
+# `last_ingested_at`, `record_count` and `version` are filled in by the pipeline
+# (hazard_sources table) — this file records provenance, not ingestion state.
+
+registry_version: "2026-10-13"
+
+sources:
+  - id: openaddresses_ca
+    name: OpenAddresses — California county address points
+    provider: OpenAddresses
+    category: property_locations
+    url: https://batch.openaddresses.io/data
+    api_url: https://batch.openaddresses.io/api/data?source=us/ca&layer=addresses
+    download_pattern: https://batch.openaddresses.io/api/job/{job_id}/output/source.geojson.gz
+    format: GeoJSON (newline-delimited, gzip)
+    crs: EPSG:4326
+    geographic_coverage: California counties with published sources (us/ca/*)
+    temporal_coverage: Rolling; each job carries an `updated` timestamp
+    licence: Per-source (mostly public domain / CC-BY / ODbL; see each source JSON in the openaddresses GitHub repo)
+    auth_required: true
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [number, street, unit, city, district, region, postcode, id, hash]
+    notes: >
+      The /api/data listing is public and was verified (e.g. us/ca/alameda job 926561, 27.5 MB).
+      The job output download returned HTTP 403 without a session token; a free account at
+      batch.openaddresses.io provides one (CATRIX_OPENADDRESSES_TOKEN). Alternatively drop a
+      downloaded source.geojson(.gz) or OpenAddresses CSV into data/raw/openaddresses_ca/.
+      Address points are NOT one-to-one with buildings.
+
+  - id: census_tiger_counties
+    name: US Census TIGER/Line counties (2023)
+    provider: US Census Bureau
+    category: regions
+    url: https://www2.census.gov/geo/tiger/TIGER2023/COUNTY/tl_2023_us_county.zip
+    format: Shapefile (zip, 83 MB, national)
+    crs: EPSG:4269
+    geographic_coverage: United States (filtered to STATEFP = '06')
+    temporal_coverage: "2023 vintage"
+    licence: Public domain (US Government)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [STATEFP, COUNTYFP, GEOID, NAME, NAMELSAD, ALAND, AWATER]
+    notes: Used to assign county to every location and to clip to California.
+
+  - id: ms_building_footprints_ca
+    name: Microsoft US Building Footprints — California
+    provider: Microsoft
+    category: buildings
+    url: https://github.com/microsoft/usbuildingfootprints
+    download_url: https://minedbuildings.z5.web.core.windows.net/legacy/usbuildings-v2/California.geojson.zip
+    format: GeoJSON (zip, 466 MB)
+    crs: EPSG:4326
+    geographic_coverage: California (~11 million polygons)
+    temporal_coverage: Imagery 2014–2020 (v2 release)
+    licence: ODbL
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [release, capture_dates_range]
+    notes: >
+      Large file; the connector streams the zip and keeps only polygons intersecting the
+      bounding boxes of the sampled address counties. Address-to-building matching is a
+      nearest-footprint heuristic (max 30 m) and carries an explicit uncertainty flag.
+
+  - id: calfire_fire_perimeters
+    name: CAL FIRE FRAP historical fire perimeters (all)
+    provider: CAL FIRE Fire and Resource Assessment Program
+    category: wildfire_history
+    url: https://www.fire.ca.gov/what-we-do/fire-resource-assessment-program/fire-perimeters
+    api_url: https://services1.arcgis.com/jUJYIo9tSA7EHvfZ/arcgis/rest/services/California_Historic_Fire_Perimeters/FeatureServer/0
+    format: ArcGIS FeatureServer (paged JSON/GeoJSON, maxRecordCount 2000)
+    crs: EPSG:3857 (service); stored as EPSG:4326
+    geographic_coverage: California
+    temporal_coverage: 1878–present (23,334 perimeters on 2026-10-13; 4,580 since 2015)
+    licence: Public (CAL FIRE FRAP open data); see service terms
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [OBJECTID, YEAR_, STATE, AGENCY, UNIT_ID, FIRE_NAME, INC_NUM, IRWINID, ALARM_DATE, CONT_DATE, CAUSE, C_METHOD, OBJECTIVE, GIS_ACRES, COMMENTS, COMPLEX_NAME, COMPLEX_ID, FIRE_NUM, DECADES]
+    notes: >
+      Historical completeness varies: pre-1950 coverage is sparse, and small fires (below
+      10 acres timber / 50 acres grass historically) are under-mapped. ML labels use
+      YEAR_ >= 1990 only, and absence of a perimeter is treated as "no mapped perimeter",
+      not "no fire".
+
+  - id: calfire_fhsz_2024
+    name: CAL FIRE Fire Hazard Severity Zones (SRA 2022/23 + LRA 2024/25, combined)
+    provider: CAL FIRE / Office of the State Fire Marshal
+    category: wildfire_hazard
+    url: https://www.fire.ca.gov/what-we-do/fire-resource-assessment-program/gis-mapping-and-data-analytics
+    api_url: https://services1.arcgis.com/jUJYIo9tSA7EHvfZ/arcgis/rest/services/fhsz24_5/FeatureServer/0
+    format: ArcGIS FeatureServer (polygon, maxRecordCount 2000)
+    crs: EPSG:3857 (service); stored as EPSG:4326
+    geographic_coverage: California (State and Local Responsibility Areas)
+    temporal_coverage: Current regulatory zones (SRA effective 2024-04-01; LRA phased 2025)
+    licence: Public (CAL FIRE); see service terms
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [FHSZ, FHSZ_Description, FHSZ_7Class, SRA22_2, SRA_Previous]
+    notes: >
+      Present-day regulatory classification. It is NOT used as a predictor in the historical
+      wildfire ML model (it post-dates the training years); it is reported as a hazard overlay.
+
+  - id: calfire_fhsz_sra_2023
+    name: CAL FIRE Fire Hazard Severity Zones — SRA only (2023 adoption)
+    provider: CAL FIRE
+    category: wildfire_hazard
+    api_url: https://services1.arcgis.com/jUJYIo9tSA7EHvfZ/arcgis/rest/services/FHSZSRA_23_3/FeatureServer/0
+    format: ArcGIS FeatureServer
+    crs: EPSG:3857
+    geographic_coverage: California State Responsibility Area
+    temporal_coverage: "2023"
+    licence: Public (CAL FIRE)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [SRA, FHSZ, FHSZ_Description]
+    notes: Secondary/cross-check layer for the SRA portion of the combined 2024 layer.
+
+  - id: mtbs_burn_severity
+    name: Monitoring Trends in Burn Severity (MTBS) burned-area boundaries and severity mosaics
+    provider: USGS / USFS
+    category: wildfire_history
+    url: https://www.mtbs.gov/
+    format: Shapefile (boundaries) and GeoTIFF (annual severity mosaics)
+    crs: EPSG:5070 (CONUS Albers)
+    geographic_coverage: CONUS (filter to California)
+    temporal_coverage: 1984–present
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: local_only
+    notes: >
+      The MTBS direct-download page is a JavaScript application behind an antibot form; no
+      stable file URL could be confirmed. Download the CONUS burned-area boundaries zip and
+      any annual severity mosaics manually into data/raw/mtbs_burn_severity/. The connector
+      reads whatever is present and reports the layer as unavailable otherwise.
+
+  - id: landfire_fuels
+    name: LANDFIRE Fuel Vegetation Type / Fire Behavior Fuel Model 40 (LF 2022)
+    provider: USGS / USFS LANDFIRE
+    category: environment
+    url: https://www.landfire.gov/
+    format: GeoTIFF (30 m)
+    crs: EPSG:5070
+    geographic_coverage: CONUS (download California clip)
+    temporal_coverage: LF 2022 (capable fuels) with older versions back to LF 2001
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: local_only
+    notes: >
+      LANDFIRE clips are produced through the LFPS request service and delivered as zipped
+      GeoTIFFs; place the FBFM40 and EVT rasters in data/raw/landfire_fuels/. Historical
+      versions (LF 2001/2012/2014/2016/2020) should be used for the matching training years.
+
+  - id: usgs_3dep_1as
+    name: USGS 3DEP 1 arc-second seamless DEM
+    provider: USGS National Map
+    category: environment
+    url: https://www.usgs.gov/3d-elevation-program
+    download_pattern: https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/{tile}/USGS_1_{tile}.tif
+    format: GeoTIFF (1x1 degree tiles, ~28 MB each; tile id like n38w123)
+    crs: EPSG:4269 (NAD83)
+    geographic_coverage: CONUS
+    temporal_coverage: Current seamless release
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    notes: >
+      Elevation/slope/aspect are computed by windowed reads of the tiles covering sampled
+      points (cached tiles). Slope uses Horn's method on a 3x3 window with pixel spacing
+      converted to metres at the point's latitude.
+
+  - id: usgs_epqs
+    name: USGS Elevation Point Query Service
+    provider: USGS National Map
+    category: environment
+    api_url: https://epqs.nationalmap.gov/v1/json?x={lon}&y={lat}&units=Meters&wkid=4326
+    format: JSON point service
+    crs: EPSG:4326
+    geographic_coverage: United States
+    temporal_coverage: Current 3DEP
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    notes: Fallback elevation lookup when raster tiles are unavailable (no slope/aspect).
+
+  - id: usgs_designmaps_asce7_16
+    name: USGS Seismic Design Web Service (ASCE 7-16; NSHM 2014-based)
+    provider: USGS Earthquake Hazards Program
+    category: earthquake_hazard
+    url: https://www.usgs.gov/programs/earthquake-hazards/science/national-seismic-hazard-model
+    api_url: https://earthquake.usgs.gov/ws/building-codes/asce7-16/calculate?latitude={lat}&longitude={lon}&riskCategory=II&siteClass=D&title=catrix
+    format: JSON point service
+    crs: EPSG:4326
+    geographic_coverage: United States
+    temporal_coverage: ASCE 7-16 (2014 NSHM); model version v4.0.x
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [pga, pgam, pgauh, ss, s1, sds, sd1, sdc, sdcs]
+    notes: >
+      `pgauh` is the uniform-hazard PGA with 2% probability of exceedance in 50 years
+      (site class B/C reference). `pga`/`pgam` are code-adjusted MCE_G values. The platform
+      reports pgauh (horizon 2%/50y) as the quantitative indicator.
+
+  - id: cgs_ms48_pga_2pc50
+    name: CGS Map Sheet 48 — PGA, 2% in 50 years (NSHM 2023)
+    provider: California Geological Survey
+    category: earthquake_hazard
+    api_url: https://gis.conservation.ca.gov/server/rest/services/CGS/MS48_GroundMotion_PGA_2pc50/ImageServer
+    format: ArcGIS ImageServer (F32, 100 m, getSamples/identify)
+    crs: EPSG:3857
+    geographic_coverage: California
+    temporal_coverage: NSHM 2023 (published 2024)
+    licence: Public (CGS)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    notes: >
+      Sampled value verified at (-122.18, 37.85) = 1.253 g. Values are PGA in g for a
+      2,475-year return period. Some urban/coastal pixels return NoData; coverage is reported.
+
+  - id: cgs_ms48_pga_10pc50
+    name: CGS Map Sheet 48 — PGA, 10% in 50 years (NSHM 2023)
+    provider: California Geological Survey
+    category: earthquake_hazard
+    api_url: https://gis.conservation.ca.gov/server/rest/services/CGS/MS48_GroundMotion_PGA_10pc50/ImageServer
+    format: ArcGIS ImageServer (F32, 100 m)
+    crs: EPSG:3857
+    geographic_coverage: California
+    temporal_coverage: NSHM 2023
+    licence: Public (CGS)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    notes: 475-year return period companion layer.
+
+  - id: cgs_qfaults
+    name: CGS Fault Activity Map — Quaternary faults
+    provider: California Geological Survey
+    category: earthquake_hazard
+    api_url: https://gis.conservation.ca.gov/server/rest/services/CGS/FAM_QFaults/FeatureServer/0
+    format: ArcGIS FeatureServer (polyline, maxRecordCount 5000)
+    crs: EPSG:3857
+    geographic_coverage: California
+    temporal_coverage: Fault Activity Map of California (2010) with updates
+    licence: Public (CGS)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [FLT_NAME, QFLT_ID, ZN_NAME, FLT_AGE, LTYPE, SECT_NAME, FLT_SOURCE]
+    notes: Used for distance-to-nearest-fault context only; fault proximity is not a risk model.
+
+  - id: cgs_landslide_susceptibility_ms58
+    name: CGS Map Sheet 58 — Deep-seated landslide susceptibility classes
+    provider: California Geological Survey
+    category: landslide_hazard
+    api_url: https://gis.conservation.ca.gov/server/rest/services/CGS/MS58_LandslideSusceptibility_Classes/MapServer
+    format: ArcGIS MapServer raster layer (identify), classes 0-10
+    crs: EPSG:3857
+    geographic_coverage: California
+    temporal_coverage: "2011"
+    licence: Public (CGS)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    notes: Identify verified at (-122.18, 37.85) = class 7. Class semantics are in the service description.
+
+  - id: cgs_tsunami_hazard_area
+    name: CGS Tsunami Hazard Area (2021-2022 series)
+    provider: California Geological Survey / Cal OES
+    category: tsunami_hazard
+    url: https://www.conservation.ca.gov/cgs/tsunami
+    api_url: https://gis.conservation.ca.gov/server/rest/services/CGS/IW_Tsunami_Hazard_Area/FeatureServer/0
+    format: ArcGIS FeatureServer (polygon)
+    crs: EPSG:3857
+    geographic_coverage: California coast
+    temporal_coverage: 2021-2022 map series
+    licence: Public (CGS)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [Evacuate, County, Label]
+    notes: Planning-level maximum inundation; not an annual probability.
+
+  - id: cgs_seismic_hazard_zones
+    name: CGS Seismic Hazard Zones (liquefaction and earthquake-induced landslide)
+    provider: California Geological Survey
+    category: liquefaction_hazard
+    url: https://www.conservation.ca.gov/cgs/sh/program
+    format: Shapefile / GDB (zipped, statewide release)
+    crs: EPSG:3310 or EPSG:4326 (varies)
+    geographic_coverage: Mapped quadrangles only (urban Southern CA and Bay Area); NOT statewide
+    temporal_coverage: Zones released 1997-present
+    licence: Public (CGS)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: local_only
+    notes: >
+      No REST query layer for the official zones was found on the CGS server listing on
+      2026-10-13. Download the statewide zip from the CGS Seismic Hazards Program page into
+      data/raw/cgs_seismic_hazard_zones/. Locations outside mapped quadrangles are reported
+      as "outside_coverage", never as "no hazard".
+
+  - id: fema_nfhl
+    name: FEMA National Flood Hazard Layer — Flood Hazard Areas (layer 28)
+    provider: FEMA
+    category: flood_hazard
+    url: https://www.fema.gov/flood-maps/national-flood-hazard-layer
+    api_url: https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28
+    format: ArcGIS MapServer (polygon query)
+    crs: EPSG:4269 (service) / EPSG:3857 (query)
+    geographic_coverage: Mapped communities (gaps exist; unmapped is not low risk)
+    temporal_coverage: Effective FIRMs as currently published
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    fields: [DFIRM_ID, FLD_AR_ID, FLD_ZONE, ZONE_SUBTY, SFHA_TF, STATIC_BFE, DEPTH, VELOCITY]
+    notes: >
+      hazards.fema.gov reset every TLS connection from the development network on
+      2026-10-13 (likely a WAF rule), so the field list is taken from FEMA's published
+      NFHL schema (S_FLD_HAZ_AR) and must be confirmed on first successful run. The
+      connector also accepts a locally downloaded NFHL state GDB/shapefile.
+
+  - id: usgs_nhd_flowlines
+    name: USGS National Hydrography Dataset — flowlines (HU4 subsets)
+    provider: USGS
+    category: flood_hazard
+    url: https://www.usgs.gov/national-hydrography
+    download_pattern: https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/NHD/HU4/HighResolution/GDB/NHD_H_{hu4}_HU4_GDB.zip
+    format: File geodatabase (zip)
+    crs: EPSG:4269
+    geographic_coverage: By 4-digit hydrologic unit (California is 1802-1810, 1501, 1710)
+    temporal_coverage: Snapshot
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    notes: Used for distance-to-nearest-watercourse. Not probed from this environment.
+
+  - id: fema_nri_counties
+    name: FEMA National Risk Index — county table
+    provider: FEMA
+    category: regional_benchmark
+    url: https://hazards.fema.gov/nri/data-resources
+    download_url: https://hazards.fema.gov/nri/Content/StaticDocuments/DataDownload//NRI_Table_Counties/NRI_Table_Counties.zip
+    format: CSV (zip)
+    crs: n/a (tabular, keyed by county FIPS)
+    geographic_coverage: United States counties
+    temporal_coverage: Current NRI release (version recorded from file on ingest)
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    fields: [STATEFIPS, COUNTYFIPS, STCOFIPS, RISK_SCORE, WFIR_RISKS, ERQK_RISKS, RFLD_RISKS, CFLD_RISKS, DRGT_RISKS, HWAV_RISKS, SWND_RISKS, LNDS_RISKS, TSUN_RISKS, WNTW_RISKS]
+    notes: >
+      Same FEMA host reset issue as NFHL. County-level context only, never property-level
+      ground truth. Used for windstorm, drought, extreme heat, coastal flooding and winter
+      storm regional benchmarking where no property-level layer exists.
+
+  - id: usgs_earthquake_catalog
+    name: USGS ComCat earthquake catalogue (FDSN event service)
+    provider: USGS
+    category: earthquake_history
+    api_url: https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&minlatitude=32&maxlatitude=42.5&minlongitude=-125&maxlongitude=-114&minmagnitude=4&starttime=1980-01-01
+    format: GeoJSON
+    crs: EPSG:4326
+    geographic_coverage: California bounding box
+    temporal_coverage: 1980-present (2,847 M4+ events on 2026-10-13)
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    notes: Historical context (distance to and count of M4+/M5+ events); not a hazard model.
+
+  - id: noaa_atlas14
+    name: NOAA Atlas 14 precipitation-frequency point estimates
+    provider: NOAA NWS HDSC
+    category: extreme_rainfall
+    api_url: https://hdsc.nws.noaa.gov/cgi-bin/hdsc/new/cgi_readH5.py?lat={lat}&lon={lon}&type=pf&data=depth&units=metric&series=pds
+    format: Text (JavaScript-style array)
+    crs: EPSG:4326
+    geographic_coverage: California (Volume 6)
+    temporal_coverage: Atlas 14 Volume 6 (2011, rev. 2014)
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    notes: 24-hour, 100-year depth is reported as the extreme-rainfall indicator. Not probed.
+
+  - id: mrlc_nlcd
+    name: MRLC National Land Cover Database (Annual NLCD, 30 m)
+    provider: MRLC / USGS
+    category: environment
+    url: https://www.mrlc.gov/
+    format: GeoTIFF (CONUS or clipped download)
+    crs: EPSG:5070
+    geographic_coverage: CONUS
+    temporal_coverage: Annual 1985-2023
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: local_only
+    notes: Download via the MRLC viewer/clip tool into data/raw/mrlc_nlcd/ (one file per year).
+
+  - id: noaa_ncei_gsom
+    name: NOAA NCEI Global Summary of the Month (station climate)
+    provider: NOAA NCEI
+    category: climate
+    url: https://www.ncei.noaa.gov/access/services/data/v1
+    api_url: https://www.ncei.noaa.gov/access/services/data/v1?dataset=global-summary-of-the-month&dataTypes=PRCP,TMAX,TAVG&stations={station}&startDate={start}&endDate={end}&format=json
+    format: JSON/CSV
+    crs: EPSG:4326 (station points)
+    geographic_coverage: California stations
+    temporal_coverage: Station-dependent
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    notes: Annual precipitation/temperature anomalies for ML features (nearest-station assignment).
+
+  - id: us_drought_monitor
+    name: US Drought Monitor — county statistics
+    provider: National Drought Mitigation Center
+    category: drought
+    url: https://droughtmonitor.unl.edu/
+    api_url: https://usdmdataservices.unl.edu/api/CountyStatistics/GetDroughtSeverityStatisticsByAreaPercent?aoi={fips}&startdate=1/1/2000&enddate=12/31/2025&statisticsType=1
+    format: JSON
+    crs: n/a (county FIPS)
+    geographic_coverage: United States
+    temporal_coverage: 2000-present (weekly)
+    licence: Public
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    notes: Annual mean of D2+ area percentage per county for ML drought features.
+
+  - id: census_acs_housing
+    name: US Census ACS 5-year — housing value and units (tract level)
+    provider: US Census Bureau
+    category: valuation_context
+    url: https://www.census.gov/programs-surveys/acs
+    api_url: https://api.census.gov/data/2022/acs/acs5?get=NAME,B25077_001E,B25001_001E,B25034_001E&for=tract:*&in=state:06
+    format: JSON
+    crs: n/a (tract GEOID)
+    geographic_coverage: California tracts
+    temporal_coverage: 2018-2022 5-year estimates
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: unverified
+    notes: Tract median home value (B25077_001E) is an area-level estimate, not a property value.
