@@ -49,6 +49,10 @@ class EarthquakePGAModule(HazardModule):
         "exceedance probability and says nothing about building vulnerability.",
     )
 
+    cgs_source = "cgs_ms48_pga_2pc50"
+    cgs_version = "NSHM2023-MS48"
+    usgs_fallback = True  # ASCE 7-16 only provides the 2%/50y uniform-hazard PGA
+
     def __init__(self, *, allow_network: bool = True):
         self.allow_network = allow_network
 
@@ -56,9 +60,9 @@ class EarthquakePGAModule(HazardModule):
         cached = cache.get(lon, lat)
         if cached is not None:
             return cached.get("pga")
-        spec = load_registry().get("cgs_ms48_pga_2pc50")
+        spec = load_registry().get(self.cgs_source)
         assert spec.api_url
-        val = imageserver_sample("cgs_ms48_pga_2pc50", spec.api_url, lon, lat)
+        val = imageserver_sample(self.cgs_source, spec.api_url, lon, lat)
         cache.put(lon, lat, {"pga": val})
         return val
 
@@ -76,21 +80,21 @@ class EarthquakePGAModule(HazardModule):
     def assess(self, session: Session, points: pd.DataFrame) -> list[HazardResult]:
         if not self.allow_network:
             return self.unavailable(len(points), "network lookups disabled")
-        cgs_cache = PointCache("cgs_ms48_pga_2pc50")
+        cgs_cache = PointCache(self.cgs_source)
         usgs_cache = PointCache("usgs_designmaps_asce7_16")
         out = []
         cgs_failures = 0
         for r in points.itertuples():
             lon, lat = float(r.lon), float(r.lat)
             val: float | None = None
-            src = "cgs_ms48_pga_2pc50"
-            version = "NSHM2023-MS48"
+            src = self.cgs_source
+            version = self.cgs_version
             try:
                 val = self._cgs(cgs_cache, lon, lat)
             except SourceUnavailableError as exc:
                 cgs_failures += 1
                 log.warning("cgs_pga_failed", error=str(exc))
-            if val is None:
+            if val is None and self.usgs_fallback:
                 try:
                     val = self._usgs(usgs_cache, lon, lat)
                     src, version = "usgs_designmaps_asce7_16", "ASCE7-16 (NSHM2014) v4.0.x"
@@ -240,3 +244,23 @@ class EarthquakeHistoryModule(HazardModule):
                 )
             )
         return out
+
+
+class EarthquakePGA10pcModule(EarthquakePGAModule):
+    """Companion 475-year (10% in 50 years) PGA layer used by the Hazus fragility scenarios."""
+
+    info = HazardInfo(
+        hazard_id="earthquake_pga_10pc50",
+        name="Earthquake - peak ground acceleration (10% in 50 years)",
+        description="Probabilistic peak ground acceleration with 10% probability of exceedance "
+        "in 50 years (475-year return period), CGS Map Sheet 48 / NSHM 2023.",
+        source_ids=("cgs_ms48_pga_10pc50",),
+        method="point_service",
+        units="g",
+        probability_horizon="10% in 50 years",
+        scale_note="Ground-motion hazard at a second, more frequent exceedance level; "
+        "reported alongside the 2%/50y value so scenario losses can be shown at both.",
+    )
+    cgs_source = "cgs_ms48_pga_10pc50"
+    cgs_version = "NSHM2023-MS48-10pc50"
+    usgs_fallback = False

@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 from catrix.config import GEOGRAPHIC_CRS, get_settings
 from catrix.db.models import Portfolio, PortfolioProperty, ProcessingJob, Region
 from catrix.finance.scenarios import compute_scenarios
+from catrix.finance.vulnerability import BuildingProfile
 from catrix.geo.spatial import point_in_polygon_join, points_gdf
 from catrix.hazards.base import HazardResult
+from catrix.hazards.lookup import nearest_structure
 from catrix.hazards.registry import assess_points, build_modules
 from catrix.logging import get_logger
 from catrix.ml.predict import predict_for_points
@@ -166,6 +168,7 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
         chunk = df.iloc[start : start + bs]
         res = assess_points(session, chunk[["lon", "lat", "county_fips"]], modules)
         preds = predict_for_points(session, chunk[["lon", "lat", "county_fips"]])
+        structures = nearest_structure(session, chunk[["lon", "lat"]])
         for j in range(len(chunk)):
             per: dict[str, HazardResult] = {hid: lst[j] for hid, lst in res.items()}
             if preds and preds[j] is not None and preds[j].get("probability") is not None:
@@ -184,8 +187,26 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
                 )
             comp = compute_composite(per)
             row = chunk.iloc[j]
+            st = structures.get(int(chunk.index[j]))
+            building = (
+                BuildingProfile(
+                    bldgtype=st["bldgtype"],
+                    occtype=st["occtype"],
+                    num_story=st["num_story"],
+                    year_built=st["year_built"],
+                    found_type=st["found_type"],
+                    found_ht_ft=st["found_ht_ft"],
+                    ground_elev_ft=st["ground_elev_ft"],
+                    sqft=st["sqft"],
+                    val_struct_usd=st["val_struct_usd"],
+                    damage_category=st["damage_category"],
+                )
+                if st
+                else None
+            )
             fin = compute_scenarios(
                 per,
+                building=building,
                 insured_value=row["insured_value"] if pd.notna(row["insured_value"]) else None,
                 property_value=row["property_value"] if pd.notna(row["property_value"]) else None,
                 deductible=row["deductible"]

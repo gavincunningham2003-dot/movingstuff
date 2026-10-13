@@ -48,6 +48,25 @@ None were downloaded into `data/raw` (no pipeline run). Endpoint verification on
 - FEMA `hazards.fema.gov` (NFHL and NRI): every connection reset — unverified.
 - MTBS direct download: JavaScript app behind an antibot form — manual download only.
 
+## Additions on 2026-10-13 (second pass)
+
+- **Building-level vulnerability**: USACE National Structure Inventory connector
+  (`catrix ingest nsi`, verified endpoint), `structures` / `address_structures` tables
+  (migration 0002), Hazus equivalent-PGA fragility and FIA depth-damage functions in
+  `catrix/finance/vulnerability.py` with the transcribed reference tables in
+  `hazus_tables.yaml` (verify flag), building-aware scenarios at the 2%/50y and the new
+  10%/50y PGA (new `earthquake_pga_10pc50` module), flood depth from NFHL BFE minus NSI
+  first-floor elevation, NSI structure value as an externally-derived exposed value, and
+  structure attributes on the property API and the Property Explorer page.
+- **Year-matched fuel and climate features**: PRISM (annual precipitation / Tmax, 1991-2020
+  anomalies), US Drought Monitor (county D2+/D3+ yearly stats), LANDFIRE FBFM40 + canopy
+  cover via LFPS jobs (LF2016+, local older versions honoured) and NLCD epochs via WCS
+  (2001-2021), each with a `*_version_lag_years` feature; merged into the location-year
+  table by `catrix/ml/optional_features.py` and recorded in `metrics.json`.
+- Verification of the new endpoints is logged in `docs/DATA_PROVENANCE.md`; PRISM needed an
+  unverified-TLS probe because of the development network's certificate interception.
+- Unit tests: 74 passing (16 new) in the isolated venv; ruff clean.
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.
@@ -80,6 +99,7 @@ Unit tests run without network (respx mocks) or database. Integration tests requ
 | Date | Command | Result |
 |---|---|---|
 | 2026-10-13 | `pytest tests/unit -q` (isolated venv, Python 3.12.10, Windows) | **58 passed**, 0 failed, 0 skipped (140 s; includes the synthetic end-to-end training test) |
+| 2026-10-13 (second pass) | `pytest tests/unit -q` after adding NSI/Hazus and feature connectors | **74 passed**, 0 failed (145 s) |
 | 2026-10-13 | `ruff check . && ruff format --check .` | clean (91 files) |
 | 2026-10-13 | `python -m compileall catrix alembic tests` | OK |
 | 2026-10-13 | `pytest tests/integration -m integration` | not run (no database) |
@@ -107,5 +127,7 @@ rounding boundary).
 2. Run `catrix ml build-dataset` and `catrix ml train`; publish real metrics (or the
    insufficient-data explanation) and add screenshots.
 3. Validate the NFHL schema live; implement the NHD flowline distance connector.
-4. Add NOAA GSOM / USDM annual-feature connectors to the ML dataset (optional columns).
+4. Run `catrix ingest nsi` and `catrix ingest features`; confirm the LFPS job flow and the
+   NLCD WCS clip sizes on a real run; verify the transcribed Hazus tables against the
+   current manuals.
 5. Frontend `npm install && npm run build`; fix any type errors; add screenshots.

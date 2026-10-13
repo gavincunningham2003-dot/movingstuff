@@ -301,6 +301,20 @@ export function PropertyDetail() {
         { key: 'uncertainty', label: 'Uncertainty', value: d.building.uncertainty ?? '—' },
       ]
     : [];
+  const st = d.building?.structure ?? null;
+  const structureItems: KeyValue[] = st
+    ? [
+        { key: 'hazus_type', label: 'Hazus building type', value: st.hazus_type ?? '—' },
+        { key: 'bldgtype', label: 'Material (NSI)', value: st.bldgtype ?? '—' },
+        { key: 'occtype', label: 'Occupancy', value: st.occtype ?? '—' },
+        { key: 'storeys', label: 'Storeys', value: fmtInt(st.num_story) },
+        { key: 'year_built', label: 'Year built (median)', value: st.year_built ?? '—' },
+        { key: 'found', label: 'Foundation / height', value: `${st.found_type ?? '—'}${isNum(st.found_ht_ft) ? ` / ${fmtNum(st.found_ht_ft, 1)} ft` : ''}` },
+        { key: 'sqft', label: 'Floor area', value: isNum(st.sqft) ? `${fmtNum(st.sqft, 0)} sq ft` : '—' },
+        { key: 'val_struct', label: 'Structure value (NSI, modelled)', value: fmtUsd(st.val_struct_usd) },
+        { key: 'st_match', label: 'Match distance / uncertainty', value: `${isNum(st.match_distance_m) ? `${fmtNum(st.match_distance_m, 1)} m` : '—'} / ${st.uncertainty ?? '—'}` },
+      ]
+    : [];
   const envItems = d.environment ? environmentItems(d.environment) : [];
   const coverageEntries = Object.entries(d.coverage);
 
@@ -326,6 +340,13 @@ export function PropertyDetail() {
               <>
                 <div className="mb-1 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">Building match</div>
                 <KeyValueList items={buildingItems} />
+              </>
+            )}
+            {structureItems.length > 0 && (
+              <>
+                <div className="mb-1 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">Structure attributes (USACE NSI)</div>
+                <KeyValueList items={structureItems} />
+                <p className="mt-2 text-xs text-slate-500">Modelled national-inventory attributes, not a survey. They drive the Hazus damage functions in the financial scenarios below.</p>
               </>
             )}
           </div>

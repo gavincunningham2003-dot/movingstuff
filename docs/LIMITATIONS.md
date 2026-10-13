@@ -12,14 +12,25 @@
 4. **FEMA endpoints unverified** from the authoring network; NFHL/NRI connectors follow the
    published schema and must be validated on first run. Flood coverage gaps are reported as
    `outside_coverage`.
-5. **No vulnerability model.** Scenario damage ratios are simplified assumptions or Hazus
-   midpoints; building type, year built, storeys and first-floor elevation are unknown.
+5. **Vulnerability is modelled, not surveyed.** Where a USACE National Structure Inventory
+   record is matched (within 30 m), earthquake and flood scenarios use Hazus fragility and
+   depth-damage functions keyed by building type, design level, storeys and foundation.
+   NSI attributes are themselves modelled estimates, the Hazus tables in
+   `backend/catrix/finance/hazus_tables.yaml` were transcribed by the authors and carry a
+   verify flag, PGA is not adjusted for site conditions (Vs30), and wildfire still uses a
+   flat screening ratio because no Hazus wildfire fragility exists. Unmatched locations
+   fall back to the flat ratios. The largest counties (e.g. Los Angeles) are skipped by
+   default because their NSI responses are multi-gigabyte.
 6. **No expected annual loss.** Event frequencies and vulnerability curves are not
    available at property level; CATRIX refuses to turn screening scores into probabilities.
 7. **Composite weights are assumptions.** They are not estimated from losses; the index is a
    prioritisation tool with the contributing measurements always visible.
-8. **Climate/fuel features optional.** LANDFIRE, NLCD, NOAA and USDM require manual or
-   unverified downloads; the ML model runs without them and says so.
+8. **Climate/fuel features are year-matched but gappy.** PRISM, USDM, LANDFIRE (LF2016+)
+   and NLCD (2001-2021) connectors are implemented against verified endpoints, yet fuels
+   before 2016 and land cover before 2001 reuse the earliest available version (the lag is
+   a feature, not hidden), drought is null before 2000, and fire-weather events (Santa Ana
+   and Diablo winds) are still absent. The model runs without any of them and records
+   which were present.
 9. **Spatial autocorrelation.** Location-years from neighbouring addresses are not
    independent; the spatial-block holdout quantifies but does not remove the effect.
 10. **Point web services** (CGS PGA, USGS design maps, Atlas 14) are rate-limited and slow
@@ -32,11 +43,12 @@
 ## Future improvements
 
 - Integrate CAL FIRE DINS structure-damage inspections for a true damage target.
-- Year-matched LANDFIRE fuel models and NLCD land cover for the ML feature table.
-- NOAA GSOM / PRISM climate anomalies and USDM drought as leakage-safe annual features.
+- Manual LANDFIRE LF2001-2014 downloads to remove the pre-2016 fuel anachronism; fire
+  weather (wind-event) features from NOAA/RAWS.
 - NHD flowline distance and HAND-based pluvial proxies for flood.
-- Alquist-Priolo fault zones and CGS quadrangle coverage polygons.
-- Hazus fragility curves keyed by assessor building attributes where county data allow.
+- Alquist-Priolo fault zones, CGS Vs30 site amplification and quadrangle coverage polygons.
+- County assessor parcel attributes (year built, construction) to replace NSI modelled
+  values where a county publishes them; verification of the transcribed Hazus tables.
 - Vector tiles (PMTiles) for hazard layers instead of per-request GeoJSON.
 - Optuna tuning, LightGBM, conformal prediction intervals, MLflow tracking in CI.
 - Correlated-event portfolio scenarios (e.g. a single perimeter footprint hitting many

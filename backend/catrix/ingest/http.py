@@ -68,7 +68,10 @@ def _client(timeout: float | None = None, headers: dict[str, str] | None = None)
     h = {"User-Agent": s.http_user_agent}
     if headers:
         h.update(headers)
-    return httpx.Client(timeout=timeout or s.http_timeout_seconds, headers=h, follow_redirects=True)
+    verify: bool | str = str(s.http_ca_bundle) if s.http_ca_bundle else s.http_verify_ssl
+    return httpx.Client(
+        timeout=timeout or s.http_timeout_seconds, headers=h, follow_redirects=True, verify=verify
+    )
 
 
 def cache_path_for(url: str, suffix: str = "") -> Path:

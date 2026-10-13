@@ -44,6 +44,13 @@ def _first_raster(source_id: str, pattern: str = "*.tif") -> Path | None:
     d = load_registry().get(source_id).raw_dir
     if not d.exists():
         return None
+    # Newest versioned sub-directory first (landfire_fuels/LF2024, mrlc_nlcd/2023), then
+    # any raster in the directory root.
+    sub = sorted((x for x in d.iterdir() if x.is_dir()), key=lambda x: x.name)
+    for vd in reversed(sub):
+        files = sorted(vd.glob(pattern))
+        if files:
+            return files[-1]
     files = sorted(d.glob(pattern))
     return files[-1] if files else None
 

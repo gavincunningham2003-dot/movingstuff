@@ -62,7 +62,28 @@ HISTORY_FEATURES = [
     "acres_5km_5y",
     "dist_nearest_perim_m",
 ]
-OPTIONAL_FEATURES = ["precip_anomaly_mm", "tmax_anomaly_c", "drought_d2_share"]
+OPTIONAL_FEATURES = [
+    # climate (PRISM, year T observations)
+    "precip_pct_normal",
+    "precip_prev_year_pct_normal",
+    "precip_3y_pct_normal",
+    "tmax_anomaly_c",
+    # drought (USDM county, year T)
+    "drought_d2_share",
+    "drought_d3_max",
+    # fuels (LANDFIRE version with data year <= T)
+    "fbfm40",
+    "fuel_group",
+    "fuel_burnable",
+    "canopy_cover_pct",
+    "burnable_frac_500m",
+    "fuel_version_lag_years",
+    # land cover (NLCD epoch <= T)
+    "lc_developed_intensity",
+    "lc_veg_frac_500m",
+    "lc_developed_frac_500m",
+    "lc_version_lag_years",
+]
 
 
 @dataclass
@@ -221,6 +242,10 @@ def build_dataset(
 ) -> pd.DataFrame:
     nb = collect_perimeter_neighbours(session)
     st = static_features(session)
+    if optional is None:
+        from catrix.ml.optional_features import load_optional_features
+
+        optional = load_optional_features(st[["address_id", "county_fips"]], spec.feature_years)
     df = build_location_year_table(nb, st, spec, optional)
     df = assign_splits(df, spec)
     path = write_parquet(df, f"dataset_{spec.version}", subdir="ml")

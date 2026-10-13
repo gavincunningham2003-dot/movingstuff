@@ -97,6 +97,27 @@ class HazardLayerFeatureCollection(BaseModel):
 
 
 # --------------------------------------------------------------------------- properties
+class StructureAttributesOut(BaseModel):
+    """USACE NSI modelled attributes of the nearest structure (not surveyed values)."""
+
+    structure_id: int | None = None
+    bldgtype: str | None = None
+    hazus_type: str | None = None
+    occtype: str | None = None
+    damage_category: str | None = None
+    num_story: int | None = None
+    sqft: float | None = None
+    found_type: str | None = None
+    found_ht_ft: float | None = None
+    ground_elev_ft: float | None = None
+    year_built: int | None = None
+    val_struct_usd: float | None = None
+    firmzone: str | None = None
+    match_distance_m: float | None = None
+    uncertainty: str | None = None
+    source_id: str = "usace_nsi"
+
+
 class BuildingMatchOut(BaseModel):
     building_id: int | None = None
     footprint_area_m2: float | None = None
@@ -104,6 +125,7 @@ class BuildingMatchOut(BaseModel):
     match_distance_m: float | None = None
     buildings_within_100m: int | None = None
     uncertainty: str | None = None
+    structure: StructureAttributesOut | None = None
 
 
 class EnvironmentOut(BaseModel):
@@ -205,6 +227,7 @@ class FinancialScenarioSetOut(BaseModel):
     exposed_value_kind: Literal["observed", "externally_derived", "assumed", "missing"]
     scenarios: list[FinancialScenarioOut]
     expected_annual_loss_available: bool = False
+    building_profile: dict[str, Any] | None = None
     note: str
 
 

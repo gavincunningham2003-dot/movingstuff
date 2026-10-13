@@ -16,12 +16,14 @@ from catrix.api.schemas import (
     PagedProperties,
     PropertyDetailOut,
     PropertySummaryOut,
+    StructureAttributesOut,
     WildfirePredictionOut,
 )
 from catrix.config import get_settings
 from catrix.db.models import (
     Address,
     AddressBuilding,
+    AddressStructure,
     Building,
     EnvironmentalObservation,
     ModelVersion,
@@ -30,6 +32,7 @@ from catrix.db.models import (
     Region,
 )
 from catrix.finance.scenarios import compute_scenarios
+from catrix.finance.vulnerability import BuildingProfile, hazus_building_type
 from catrix.hazards.base import HazardResult
 from catrix.hazards.registry import catalogue
 from catrix.scoring.composite import compute_composite
@@ -230,6 +233,45 @@ def _prediction_out(db: DB, address_id: int) -> WildfirePredictionOut | None:
     )
 
 
+def _structure(
+    db: DB, property_id: int
+) -> tuple[BuildingProfile | None, StructureAttributesOut | None]:
+    link = db.get(AddressStructure, property_id)
+    if link is None or link.structure is None:
+        return None, None
+    st = link.structure
+    profile = BuildingProfile(
+        bldgtype=st.bldgtype,
+        occtype=st.occtype,
+        num_story=st.num_story,
+        year_built=st.year_built,
+        found_type=st.found_type,
+        found_ht_ft=st.found_ht_ft,
+        ground_elev_ft=st.ground_elev_ft,
+        sqft=st.sqft,
+        val_struct_usd=st.val_struct_usd,
+        damage_category=st.damage_category,
+    )
+    out = StructureAttributesOut(
+        structure_id=st.id,
+        bldgtype=st.bldgtype,
+        hazus_type=hazus_building_type(profile),
+        occtype=st.occtype,
+        damage_category=st.damage_category,
+        num_story=st.num_story,
+        sqft=st.sqft,
+        found_type=st.found_type,
+        found_ht_ft=st.found_ht_ft,
+        ground_elev_ft=st.ground_elev_ft,
+        year_built=st.year_built,
+        val_struct_usd=st.val_struct_usd,
+        firmzone=st.firmzone,
+        match_distance_m=link.match_distance_m,
+        uncertainty=link.uncertainty,
+    )
+    return profile, out
+
+
 @router.get("/{property_id}", response_model=PropertyDetailOut)
 def get_property(property_id: int, db: DB) -> PropertyDetailOut:
     sql, p = _summary_sql("WHERE a.id = :pid", {"pid": property_id}, 1, 0)
@@ -268,7 +310,8 @@ def get_property(property_id: int, db: DB) -> PropertyDetailOut:
     ab = db.get(AddressBuilding, property_id)
     bld = db.get(Building, ab.building_id) if ab and ab.building_id else None
     env = db.get(EnvironmentalObservation, property_id)
-    fin = compute_scenarios(results)
+    profile, structure_out = _structure(db, property_id)
+    fin = compute_scenarios(results, building=profile)
     return PropertyDetailOut(
         **summary.model_dump(),
         acquired_at=addr.acquired_at,
@@ -279,9 +322,10 @@ def get_property(property_id: int, db: DB) -> PropertyDetailOut:
             match_distance_m=ab.match_distance_m,
             buildings_within_100m=ab.buildings_within_100m,
             uncertainty=ab.uncertainty,
+            structure=structure_out,
         )
         if ab
-        else None,
+        else (BuildingMatchOut(structure=structure_out) if structure_out else None),
         environment=EnvironmentOut(
             elevation_m=env.elevation_m,
             slope_deg=env.slope_deg,
@@ -359,8 +403,10 @@ def get_property_financial(
     )
     if not rows:
         raise HTTPException(404, "property not found or not assessed")
+    profile, _ = _structure(db, property_id)
     fin = compute_scenarios(
         {a.hazard_id: _as_result(a) for a in rows},
+        building=profile,
         insured_value=insured_value,
         property_value=property_value,
         deductible=deductible,

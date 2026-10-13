@@ -1,0 +1,81 @@
+# Hazus damage functions used by catrix.finance.vulnerability.
+#
+# PROVENANCE AND STATUS
+#   These values were transcribed by the CATRIX authors from the FEMA Hazus-MH Earthquake
+#   Model Technical Manual (equivalent-PGA structural fragility, Table 5-16 a-d) and the
+#   Hazus Flood Model Technical Manual default residential depth-damage functions (FIA
+#   credibility-weighted curves). They are provided so the loss logic is auditable and
+#   runnable, and every result derived from them is labelled
+#   kind = externally_derived, source = "Hazus (transcribed; verify)".
+#   Check each number against the current manuals before any production use.
+version: hazus-ref-0.1
+
+earthquake:
+  # Lognormal fragility: P(DS >= ds | PGA) = Phi( ln(PGA / median_ds) / beta )
+  # Medians in g. Damage states: slight, moderate, extensive, complete.
+  beta: 0.64
+  design_level_by_year_california:
+    # Hazus guidance for UBC seismic zone 4 (all of the sampled California counties).
+    - {min_year: 1975, level: high}
+    - {min_year: 1941, level: moderate}
+    - {min_year: 0,    level: pre}
+  # Central (expected) loss ratio for each damage state, building total repair cost as a
+  # fraction of replacement value (structural + non-structural, Hazus convention).
+  damage_state_loss_ratio: {slight: 0.02, moderate: 0.10, extensive: 0.50, complete: 1.00}
+  fragility_pga_medians:
+    W1:   # wood light frame (<= 5,000 sq ft)
+      high:     [0.26, 0.55, 1.28, 2.01]
+      moderate: [0.22, 0.42, 0.98, 1.57]
+      low:      [0.20, 0.34, 0.61, 0.95]
+      pre:      [0.18, 0.29, 0.51, 0.77]
+    W2:   # wood commercial/industrial (> 5,000 sq ft)
+      high:     [0.26, 0.56, 1.15, 2.08]
+      moderate: [0.20, 0.35, 0.64, 1.13]
+      low:      [0.14, 0.23, 0.48, 0.75]
+      pre:      [0.12, 0.19, 0.37, 0.60]
+    S1L:  # steel moment frame, low rise
+      high:     [0.19, 0.31, 0.64, 1.49]
+      moderate: [0.15, 0.22, 0.42, 0.80]
+      low:      [0.12, 0.17, 0.30, 0.48]
+      pre:      [0.09, 0.13, 0.22, 0.38]
+    C1L:  # concrete moment frame, low rise
+      high:     [0.21, 0.35, 0.70, 1.37]
+      moderate: [0.16, 0.23, 0.41, 0.77]
+      low:      [0.12, 0.15, 0.27, 0.45]
+      pre:      [0.10, 0.12, 0.21, 0.36]
+    RM1L: # reinforced masonry with wood/metal diaphragms, low rise
+      high:     [0.30, 0.46, 0.93, 1.57]
+      moderate: [0.22, 0.30, 0.50, 0.85]
+      low:      [0.16, 0.20, 0.29, 0.54]
+      pre:      [0.13, 0.16, 0.24, 0.43]
+    URML: # unreinforced masonry, low rise (no high/moderate code in Hazus)
+      low:      [0.14, 0.20, 0.32, 0.46]
+      pre:      [0.13, 0.17, 0.26, 0.37]
+    MH:   # manufactured housing
+      high:     [0.11, 0.18, 0.31, 0.60]
+      moderate: [0.11, 0.18, 0.31, 0.60]
+      low:      [0.11, 0.18, 0.31, 0.60]
+      pre:      [0.08, 0.11, 0.18, 0.34]
+
+flood:
+  # Depth-damage functions: building damage (% of replacement value) by water depth above
+  # the first floor in feet. Linear interpolation between points; clipped at the ends.
+  # Keys: residential, by storeys and basement presence (FIA default curves).
+  depth_damage_pct:
+    res_1story_nobasement:
+      depth_ft: [-2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16]
+      pct:      [0, 0, 18, 22, 27, 29, 30, 40, 43, 44, 48, 49, 50, 51, 53, 55]
+    res_2story_nobasement:
+      depth_ft: [-2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16]
+      pct:      [0, 0, 9, 13, 18, 20, 22, 24, 26, 29, 33, 37, 41, 49, 57, 64]
+    res_1story_basement:
+      depth_ft: [-8, -6, -4, -2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16]
+      pct:      [0, 2, 6, 11, 20, 25, 30, 34, 37, 40, 42, 44, 46, 49, 51, 54, 57, 59]
+    res_2story_basement:
+      depth_ft: [-8, -6, -4, -2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16]
+      pct:      [0, 2, 5, 8, 11, 15, 20, 23, 28, 33, 38, 44, 49, 51, 53, 56, 59, 62]
+    nonres_default:
+      depth_ft: [-2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16]
+      pct:      [0, 0, 10, 15, 22, 28, 33, 38, 42, 46, 50, 56, 60, 68]
+  # Scenario depths (feet above first floor) used when no base flood elevation is available.
+  assumed_depths_ft: [1.0, 3.0]

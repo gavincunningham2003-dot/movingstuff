@@ -14,6 +14,7 @@ from catrix.db.models import Address, PropertyHazardAssessment
 from catrix.hazards.base import HazardInfo, HazardModule, HazardResult
 from catrix.hazards.earthquake import (
     EarthquakeHistoryModule,
+    EarthquakePGA10pcModule,
     EarthquakePGAModule,
     FaultProximityModule,
 )
@@ -36,6 +37,7 @@ def build_modules(*, allow_network: bool = True) -> list[HazardModule]:
         WildfireFHSZModule(),
         WildfirePerimeterHistoryModule(),
         EarthquakePGAModule(allow_network=allow_network),
+        EarthquakePGA10pcModule(allow_network=allow_network),
         FaultProximityModule(),
         EarthquakeHistoryModule(),
         FloodNFHLModule(),

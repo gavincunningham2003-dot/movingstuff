@@ -34,6 +34,11 @@ the `hazard_sources` table and shown on the Data Quality page and `/api/v1/data-
 | usgs_epqs | GET | value 16.51 m at SF |
 | usgs_earthquake_catalog | FDSN count | 2,847 M4+ events since 1980 |
 | fema_nfhl, fema_nri_counties | GET metadata / HEAD zip | connection reset by host (3 attempts each) |
+| usace_nsi | `GET /nsiapi/structures?fips=06003` | GeoJSON with bldgtype, occtype, num_story, found_type, found_ht, ground_elv, med_yr_blt, val_struct, firmzone, static_bfe; `?bbox=` form returned an empty collection |
+| landfire_fuels | GPServer metadata; `/api/products` | Layer_List / Area_of_Interest parameters confirmed; FBFM40/CC/EVT products listed for LF2016, LF2022-LF2025 only |
+| prism_climate | HEAD `/prism/data/get/us/4km/ppt/2020`, `tmax/1995`, normals | application/zip (prism_ppt_us_25m_2020.zip etc.); old `/data/public/` URLs return a notice; TLS failed only under the dev network's certificate interception |
+| us_drought_monitor | GET county statistics for 06001 | CSV with weekly None/D0-D4 area percentages |
+| mrlc_nlcd | WCS GetCapabilities / DescribeCoverage | 597 coverages; NLCD_2001...2021_Land_Cover_L48 in EPSG:5070 with X/Y axes |
 | mtbs_burn_severity | GET direct-download page | JS app with antibot form |
 | landfire_fuels, mrlc_nlcd, cgs_seismic_hazard_zones, noaa_*, us_drought_monitor, census_acs_housing | not probed | documented endpoints only |
 
@@ -44,6 +49,10 @@ the `hazard_sources` table and shown on the Data Quality page and `/api/v1/data-
 | OpenAddresses | per-source; mostly public domain / CC-BY / ODbL (see each `sources/us/ca/*.json`) |
 | TIGER/Line, USGS, NOAA, FEMA, Census | US Government public domain |
 | Microsoft Building Footprints | ODbL |
+| USACE National Structure Inventory | US Government public domain |
+| PRISM Climate Group | free for non-commercial use with attribution |
+| US Drought Monitor (NDMC) | public |
+| LANDFIRE, MRLC NLCD | US Government public domain |
 | CAL FIRE FRAP / FHSZ | CAL FIRE open data terms |
 | CGS layers | California Department of Conservation terms |
 

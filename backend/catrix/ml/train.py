@@ -35,6 +35,7 @@ from catrix.logging import get_logger
 from catrix.ml.dataset import DEFAULT_SPEC, DatasetSpec, feature_columns, leakage_checks
 from catrix.ml.evaluate import choose_threshold, evaluate, geographic_performance
 from catrix.ml.explain import shap_summary
+from catrix.ml.optional_features import describe_optional
 
 log = get_logger(__name__)
 
@@ -196,6 +197,9 @@ def train_all(
         "trained_at": datetime.now(UTC).isoformat(),
         "models": [],
         "status": "available",
+        # Share of rows with a non-null value for each optional (climate/drought/fuel/
+        # land-cover) feature, so readers can see which sources actually contributed.
+        "optional_feature_coverage": describe_optional(df),
     }
     if n_pos_train < MIN_POSITIVES or len(test) == 0 or test["label"].sum() < 10:
         doc["status"] = "insufficient_data"

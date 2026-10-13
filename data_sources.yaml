@@ -150,22 +150,27 @@ sources:
       reads whatever is present and reports the layer as unavailable otherwise.
 
   - id: landfire_fuels
-    name: LANDFIRE Fuel Vegetation Type / Fire Behavior Fuel Model 40 (LF 2022)
+    name: LANDFIRE Fire Behavior Fuel Model 40 and Canopy Cover (LFPS clips)
     provider: USGS / USFS LANDFIRE
     category: environment
     url: https://www.landfire.gov/
-    format: GeoTIFF (30 m)
-    crs: EPSG:5070
-    geographic_coverage: CONUS (download California clip)
-    temporal_coverage: LF 2022 (capable fuels) with older versions back to LF 2001
+    api_url: https://lfps.usgs.gov/arcgis/rest/services/LandfireProductService/GPServer/LandfireProductService
+    format: Multi-band GeoTIFF zip from an asynchronous geoprocessing job (Layer_List; Area_of_Interest as W S E N in WGS84)
+    crs: EPSG:5070 (30 m)
+    geographic_coverage: CONUS (clipped to the sampled address extent)
+    temporal_coverage: LFPS serves LF2016, LF2022, LF2023, LF2024, LF2025 (verified product list); LF2001-LF2014 are manual downloads
     licence: Public domain
     auth_required: false
     verified_on: "2026-10-13"
-    verification_status: local_only
+    verification_status: verified
+    fields: [LF2016_FBFM40, LF2016_CC, LF2022_FBFM40, LF2022_CC, LF2023_FBFM40, LF2023_CC, LF2024_FBFM40, LF2024_CC]
     notes: >
-      LANDFIRE clips are produced through the LFPS request service and delivered as zipped
-      GeoTIFFs; place the FBFM40 and EVT rasters in data/raw/landfire_fuels/. Historical
-      versions (LF 2001/2012/2014/2016/2020) should be used for the matching training years.
+      Service metadata and product list verified; the submit/poll/download job flow follows
+      the ArcGIS GPServer convention and is validated on first run. Outputs are stored under
+      data/raw/landfire_fuels/<version>/. Older versions placed manually in the same layout
+      (e.g. LF2001, LF2008, LF2010, LF2012, LF2014 with FBFM40/CC GeoTIFFs) are picked up
+      automatically. Training years before the earliest available version use that version
+      and record the lag in years as a feature (fuel_version_lag_years).
 
   - id: usgs_3dep_1as
     name: USGS 3DEP 1 arc-second seamless DEM
@@ -408,19 +413,26 @@ sources:
     notes: 24-hour, 100-year depth is reported as the extreme-rainfall indicator. Not probed.
 
   - id: mrlc_nlcd
-    name: MRLC National Land Cover Database (Annual NLCD, 30 m)
+    name: MRLC National Land Cover Database epochs via WCS (30 m)
     provider: MRLC / USGS
     category: environment
     url: https://www.mrlc.gov/
-    format: GeoTIFF (CONUS or clipped download)
+    api_url: https://www.mrlc.gov/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=mrlc_download__NLCD_{year}_Land_Cover_L48&subset=X({minx},{maxx})&subset=Y({miny},{maxy})&format=image/geotiff
+    format: GeoTIFF via OGC WCS 2.0.1 GetCoverage (subset in EPSG:5070 metres, axes X Y)
     crs: EPSG:5070
-    geographic_coverage: CONUS
-    temporal_coverage: Annual 1985-2023
+    geographic_coverage: CONUS (clipped to 0.5-degree tiles around sampled addresses)
+    temporal_coverage: Epochs 2001, 2004, 2006, 2008, 2011, 2013, 2016, 2019, 2021 (verified coverage ids)
     licence: Public domain
     auth_required: false
     verified_on: "2026-10-13"
-    verification_status: local_only
-    notes: Download via the MRLC viewer/clip tool into data/raw/mrlc_nlcd/ (one file per year).
+    verification_status: verified
+    fields: [mrlc_download__NLCD_2001_Land_Cover_L48, mrlc_download__NLCD_2021_Land_Cover_L48]
+    notes: >
+      GetCapabilities and DescribeCoverage verified (597 coverages; NLCD_2021_Land_Cover_L48
+      is EPSG:5070 with X/Y axes). Annual NLCD 1985-2023 exists only as CONUS bundles and can
+      be dropped into data/raw/mrlc_nlcd/<year>/ manually. Training years use the latest
+      epoch at or before T; years before 2001 use 2001 with the lag recorded
+      (lc_version_lag_years).
 
   - id: noaa_ncei_gsom
     name: NOAA NCEI Global Summary of the Month (station climate)
@@ -443,16 +455,20 @@ sources:
     provider: National Drought Mitigation Center
     category: drought
     url: https://droughtmonitor.unl.edu/
-    api_url: https://usdmdataservices.unl.edu/api/CountyStatistics/GetDroughtSeverityStatisticsByAreaPercent?aoi={fips}&startdate=1/1/2000&enddate=12/31/2025&statisticsType=1
-    format: JSON
+    api_url: https://usdmdataservices.unl.edu/api/CountyStatistics/GetDroughtSeverityStatisticsByAreaPercent?aoi={fips}&startdate={start}&enddate={end}&statisticsType=1
+    format: CSV (weekly rows; columns MapDate,FIPS,County,State,None,D0,D1,D2,D3,D4,ValidStart,ValidEnd)
     crs: n/a (county FIPS)
     geographic_coverage: United States
-    temporal_coverage: 2000-present (weekly)
-    licence: Public
+    temporal_coverage: 2000-01-04 to present (weekly)
+    licence: Public (NDMC)
     auth_required: false
     verified_on: "2026-10-13"
-    verification_status: unverified
-    notes: Annual mean of D2+ area percentage per county for ML drought features.
+    verification_status: verified
+    fields: [MapDate, FIPS, None, D0, D1, D2, D3, D4, ValidStart, ValidEnd]
+    notes: >
+      Verified for aoi=06001 (returns CSV despite the JSON-looking endpoint). Yearly
+      features: mean weekly area share in D2+ and max share in D3+ per county. Years before
+      2000 have no value (left null, never imputed as no drought).
 
   - id: census_acs_housing
     name: US Census ACS 5-year — housing value and units (tract level)
@@ -469,3 +485,67 @@ sources:
     verified_on: "2026-10-13"
     verification_status: unverified
     notes: Tract median home value (B25077_001E) is an area-level estimate, not a property value.
+
+  - id: usace_nsi
+    name: USACE National Structure Inventory (NSI 2022)
+    provider: US Army Corps of Engineers
+    category: buildings
+    url: https://www.hec.usace.army.mil/confluence/nsi
+    api_url: https://nsi.sec.usace.army.mil/nsiapi/structures?fips={fips}
+    format: GeoJSON FeatureCollection (points, one per structure, whole county per request)
+    crs: EPSG:4326
+    geographic_coverage: United States (requested per county FIPS)
+    temporal_coverage: NSI 2022 release
+    licence: Public domain (US Government)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [fd_id, bid, bldgtype, occtype, num_story, sqft, found_type, found_ht, ground_elv, grnd_elv_m, med_yr_blt, val_struct, val_cont, firmzone, static_bfe, ftprntsqft, cbfips, st_damcat]
+    notes: >
+      Verified for fips=06003 (Alpine). Attributes are modelled, Hazus-consistent estimates,
+      not surveyed values: bldgtype W/M/S/C/H, occtype (e.g. RES1-1SNB), num_story,
+      found_type (S slab, C crawl, B basement, P pier), found_ht in feet, val_struct
+      (depreciated structure replacement value, USD). Large counties (Los Angeles has
+      roughly 3 million structures) are multi-GB responses; the connector skips counties
+      above a configurable size unless --include-large is set. Address-to-structure matching
+      is nearest within 30 m with an explicit uncertainty class.
+
+  - id: hazus_fragility_reference
+    name: FEMA Hazus damage functions (earthquake equivalent-PGA fragility; flood depth-damage)
+    provider: FEMA Hazus (reference tables transcribed into backend/catrix/finance/hazus_tables.yaml)
+    category: vulnerability_reference
+    url: https://www.fema.gov/flood-maps/products-tools/hazus
+    format: YAML in repository
+    crs: n/a
+    geographic_coverage: n/a
+    temporal_coverage: Hazus-MH earthquake model technical manual (equivalent-PGA structural fragility, Table 5-16); Hazus flood model default residential depth-damage functions (FIA)
+    licence: Public domain
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: local_only
+    notes: >
+      The medians, betas and depth-damage percentages were transcribed by the CATRIX authors
+      from the Hazus manuals and are labelled externally_derived with a verify flag. They
+      must be checked against the current Hazus technical manuals before production use.
+
+  - id: prism_climate
+    name: PRISM annual precipitation and maximum temperature (4 km)
+    provider: PRISM Climate Group, Oregon State University
+    category: climate
+    url: https://prism.oregonstate.edu/
+    api_url: https://services.nacse.org/prism/data/get/us/4km/{element}/{year}
+    format: Zip containing a CONUS raster (BIL or GeoTIFF) per element-year; normals at /prism/data/get/normals/us/4km/{element}/annual
+    crs: EPSG:4269 (NAD83), 4 km
+    geographic_coverage: CONUS
+    temporal_coverage: 1981-present (annual); 1991-2020 normals
+    licence: Free for non-commercial use with attribution (see prism.oregonstate.edu terms)
+    auth_required: false
+    verified_on: "2026-10-13"
+    verification_status: verified
+    fields: [ppt, tmax, tmean, tmin]
+    notes: >
+      HEAD verified: prism_ppt_us_25m_2020.zip, prism_tmax_us_25m_1995.zip and the annual
+      ppt normals zip. The old /prism/data/public/ URLs now return a redirect notice. The
+      development network's TLS interception broke certificate validation for this host;
+      CATRIX_HTTP_VERIFY_SSL and CATRIX_HTTP_CA_BUNDLE control verification. Anomalies are
+      computed against the 1991-2020 mean of the downloaded annual grids.

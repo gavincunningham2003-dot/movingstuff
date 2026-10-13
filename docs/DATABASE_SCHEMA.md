@@ -1,6 +1,8 @@
 # Database schema (PostGIS)
 
-Defined in `backend/catrix/db/models.py`; migration `backend/alembic/versions/0001_initial_schema.py`.
+Defined in `backend/catrix/db/models.py`; migrations `backend/alembic/versions/0001_initial_schema.py`
+and `0002_structures.py`. Year-matched ML feature tables (climate, drought, fuel, land
+cover) are kept as Parquet under `data/processed/ml/` rather than in the database.
 All geometries are SRID 4326 with GiST indexes. Rasters stay on disk.
 
 | Table | Purpose | Key columns / constraints |
@@ -10,6 +12,8 @@ All geometries are SRID 4326 with GiST indexes. Rasters stay on disk.
 | `addresses` | property locations | FK `source_id`, FK `county_fips → regions.fips`, `geom` POINT, `dedup_key`, unique (`source_id`,`hash`) |
 | `buildings` | footprints | `footprint_area_m2`, `geom` POLYGON |
 | `address_buildings` | address→building match | PK `address_id`, `match_method`, `match_distance_m`, `buildings_within_100m`, `uncertainty` |
+| `structures` | USACE NSI structure points (migration 0002) | PK = NSI `fd_id`; `bldgtype`, `occtype`, `num_story`, `found_type`, `found_ht_ft`, `ground_elev_ft`, `year_built`, `val_struct_usd`, `firmzone`, `static_bfe_ft`, `geom` POINT |
+| `address_structures` | address→nearest NSI structure (≤ 30 m) | PK `address_id`, `structure_id`, `match_distance_m`, `uncertainty` |
 | `wildfire_events` | CAL FIRE perimeters | unique (`source_id`,`source_object_id`), `year` idx, `geom` MULTIPOLYGON |
 | `hazard_geometries` | generic hazard polygons (FHSZ, NFHL, tsunami, liquefaction) | `hazard_id`+`classification` idx, `class_code`, `attributes` JSON |
 | `hazard_lines` | faults, flowlines | `hazard_id`, `geom` MULTILINESTRING |

@@ -191,6 +191,36 @@ def earthquake_history_lookup(
     return out
 
 
+def nearest_structure(
+    session: Session, points: pd.DataFrame, max_m: float = 30.0
+) -> dict[int, dict[str, Any]]:
+    """Nearest NSI structure (within ``max_m``) for each point, with its attributes."""
+    out: dict[int, dict[str, Any]] = {}
+    rows = list(
+        zip(points.index, points["lon"].astype(float), points["lat"].astype(float), strict=True)
+    )
+    for chunk in chunked(rows, BATCH):
+        sql = text(
+            f"""
+            WITH pts(i, lon, lat) AS (VALUES {_values_clause(chunk)})
+            SELECT pts.i AS i, s.id AS structure_id, s.bldgtype, s.occtype, s.damage_category,
+                   s.num_story, s.sqft, s.found_type, s.found_ht_ft, s.ground_elev_ft, s.year_built,
+                   s.val_struct_usd, s.firmzone, s.static_bfe_ft,
+                   ST_Distance(s.geom::geography, ST_SetSRID(ST_MakePoint(pts.lon, pts.lat), 4326)::geography) AS dist_m
+            FROM pts
+            CROSS JOIN LATERAL (
+                SELECT * FROM structures
+                ORDER BY geom <-> ST_SetSRID(ST_MakePoint(pts.lon, pts.lat), 4326)
+                LIMIT 1
+            ) s
+            """
+        )
+        for r in session.execute(sql).mappings():
+            if r["dist_m"] is not None and r["dist_m"] <= max_m:
+                out[int(r["i"])] = dict(r)
+    return out
+
+
 def regional_lookup(
     session: Session, metrics: list[str], county_fips: Iterable[str]
 ) -> dict[str, dict[str, Any]]:

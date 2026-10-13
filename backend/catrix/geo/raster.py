@@ -10,9 +10,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import rasterio
+import rasterio.transform
 from pyproj import CRS, Transformer
 from rasterio.windows import Window
 
@@ -114,3 +116,79 @@ def dem_tile_id(lon: float, lat: float) -> str:
 
 def open_raster(path: str | Path) -> rasterio.DatasetReader:
     return rasterio.open(str(path))
+
+
+def _to_raster_crs_many(
+    ds: rasterio.DatasetReader, lons: np.ndarray, lats: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    lons = np.asarray(lons, dtype=float)
+    lats = np.asarray(lats, dtype=float)
+    if ds.crs is None or CRS.from_user_input(ds.crs).to_epsg() == 4326:
+        return lons, lats
+    t = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
+    x, y = t.transform(lons, lats)
+    return np.asarray(x), np.asarray(y)
+
+
+def sample_values(
+    ds: rasterio.DatasetReader, lons: np.ndarray, lats: np.ndarray, band: int = 1
+) -> np.ndarray:
+    """Vectorised point sampling; NoData and out-of-bounds become NaN."""
+    xs, ys = _to_raster_crs_many(ds, lons, lats)
+    out = np.full(len(xs), np.nan, dtype=float)
+    if len(xs) == 0:
+        return out
+    rows, cols = rasterio.transform.rowcol(ds.transform, xs, ys)
+    rows = np.asarray(rows)
+    cols = np.asarray(cols)
+    inside = (rows >= 0) & (cols >= 0) & (rows < ds.height) & (cols < ds.width)
+    if not inside.any():
+        return out
+    # Read the bounding window of all inside points once (bounded by the raster extent).
+    r0, r1 = int(rows[inside].min()), int(rows[inside].max())
+    c0, c1 = int(cols[inside].min()), int(cols[inside].max())
+    block = ds.read(band, window=Window(c0, r0, c1 - c0 + 1, r1 - r0 + 1)).astype(float)
+    vals = block[rows[inside] - r0, cols[inside] - c0]
+    if ds.nodata is not None:
+        vals = np.where(vals == ds.nodata, np.nan, vals)
+    out[inside] = vals
+    return out
+
+
+def window_fraction(
+    ds: rasterio.DatasetReader,
+    lons: np.ndarray,
+    lats: np.ndarray,
+    *,
+    radius_m: float,
+    predicate: Any,
+    band: int = 1,
+) -> np.ndarray:
+    """Fraction of valid pixels within ``radius_m`` of each point satisfying ``predicate``
+    (a function over an integer/float array returning a boolean array)."""
+    xs, ys = _to_raster_crs_many(ds, lons, lats)
+    out = np.full(len(xs), np.nan, dtype=float)
+    if len(xs) == 0:
+        return out
+    res_x, res_y = ds.res
+    if ds.crs is not None and CRS.from_user_input(ds.crs).is_geographic:
+        m_lon, m_lat = metres_per_degree(float(np.nanmean(lats)) if len(lats) else 37.0)
+        px, py = res_x * m_lon, res_y * m_lat
+    else:
+        px, py = float(res_x), float(res_y)
+    rx, ry = max(1, int(round(radius_m / px))), max(1, int(round(radius_m / py)))
+    rows, cols = rasterio.transform.rowcol(ds.transform, xs, ys)
+    for i, (r, c) in enumerate(zip(np.asarray(rows), np.asarray(cols), strict=True)):
+        r0, r1 = max(0, int(r) - ry), min(ds.height, int(r) + ry + 1)
+        c0, c1 = max(0, int(c) - rx), min(ds.width, int(c) + rx + 1)
+        if r1 <= r0 or c1 <= c0:
+            continue
+        win = ds.read(band, window=Window(c0, r0, c1 - c0, r1 - r0)).astype(float)
+        valid = ~np.isnan(win)
+        if ds.nodata is not None:
+            valid &= win != ds.nodata
+        n_valid = int(valid.sum())
+        if n_valid == 0:
+            continue
+        out[i] = float(np.logical_and(predicate(win), valid).sum() / n_valid)
+    return out

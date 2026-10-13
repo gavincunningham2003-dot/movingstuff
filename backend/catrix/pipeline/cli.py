@@ -173,6 +173,67 @@ def ingest_environment() -> None:
     _run_connector(EnvironmentConnector())
 
 
+@ingest_app.command("nsi")
+def ingest_nsi(force: bool = False, include_large: bool = False) -> None:
+    """USACE National Structure Inventory (building attributes for Hazus vulnerability)."""
+    from catrix.ingest.nsi import NSIConnector
+
+    _run_connector(NSIConnector(), force=force, include_large=include_large)
+
+
+@ingest_app.command("prism")
+def ingest_prism(force: bool = False, start_year: int = 1991, end_year: int | None = None) -> None:
+    """PRISM annual precipitation / Tmax per address (ML climate features)."""
+    from catrix.ingest.prism import PRISMConnector
+
+    _run_connector(PRISMConnector(), force=force, start_year=start_year, end_year=end_year)
+
+
+@ingest_app.command("drought")
+def ingest_drought(force: bool = False) -> None:
+    """US Drought Monitor county statistics (ML drought features)."""
+    from catrix.ingest.drought import DroughtConnector
+
+    _run_connector(DroughtConnector(), force=force)
+
+
+@ingest_app.command("landfire")
+def ingest_landfire(
+    force: bool = False,
+    version: Annotated[list[str] | None, typer.Option(help="LF versions, e.g. LF2016")] = None,
+) -> None:
+    """LANDFIRE fuel model / canopy cover clips via LFPS (ML fuel features)."""
+    from catrix.ingest.landfire import LandfireConnector
+
+    _run_connector(LandfireConnector(), force=force, versions=version)
+
+
+@ingest_app.command("nlcd")
+def ingest_nlcd(
+    force: bool = False,
+    epoch: Annotated[list[int] | None, typer.Option(help="NLCD epochs, e.g. 2016")] = None,
+) -> None:
+    """MRLC NLCD land cover epochs via WCS (ML land-cover features)."""
+    from catrix.ingest.nlcd import NLCDConnector
+
+    _run_connector(NLCDConnector(), force=force, epochs=epoch)
+
+
+@ingest_app.command("features")
+def ingest_features() -> None:
+    """Year-matched ML feature sources: PRISM, USDM, LANDFIRE, NLCD (each tolerant of failure)."""
+    from catrix.ingest.drought import DroughtConnector
+    from catrix.ingest.landfire import LandfireConnector
+    from catrix.ingest.nlcd import NLCDConnector
+    from catrix.ingest.prism import PRISMConnector
+
+    for c in (PRISMConnector(), DroughtConnector(), LandfireConnector(), NLCDConnector()):
+        try:
+            _run_connector(c)
+        except typer.Exit:
+            typer.echo(f"{c.source_id} failed (continuing)")
+
+
 @ingest_app.command("all")
 def ingest_all(
     sample: int | None = None, min_year: int = 1950, skip_buildings: bool = False
@@ -208,6 +269,13 @@ def ingest_all(
         except typer.Exit:
             typer.echo("buildings failed (continuing)")
     _run_connector(ElevationConnector())
+    from catrix.ingest.nsi import NSIConnector
+
+    try:
+        _run_connector(NSIConnector())
+    except typer.Exit:
+        typer.echo("nsi failed (continuing)")
+    ingest_features()
     _run_connector(EnvironmentConnector())
 
 

@@ -146,6 +146,47 @@ class AddressBuilding(Base):
     footprint: Mapped[Building | None] = relationship()
 
 
+class Structure(Base):
+    """USACE National Structure Inventory point: modelled building attributes used for
+    Hazus-style vulnerability (building type, storeys, foundation, year built, value)."""
+
+    __tablename__ = "structures"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # NSI fd_id
+    source_id: Mapped[str] = mapped_column(ForeignKey("hazard_sources.id"), index=True)
+    bid: Mapped[str | None] = mapped_column(String(64))
+    bldgtype: Mapped[str | None] = mapped_column(String(4))  # W M S C H
+    occtype: Mapped[str | None] = mapped_column(String(16))  # e.g. RES1-1SNB
+    damage_category: Mapped[str | None] = mapped_column(String(8))  # RES COM IND PUB
+    num_story: Mapped[int | None] = mapped_column(Integer)
+    sqft: Mapped[float | None] = mapped_column(Float)
+    found_type: Mapped[str | None] = mapped_column(String(4))  # S C B P I W F
+    found_ht_ft: Mapped[float | None] = mapped_column(Float)
+    ground_elev_ft: Mapped[float | None] = mapped_column(Float)
+    year_built: Mapped[int | None] = mapped_column(Integer)
+    val_struct_usd: Mapped[float | None] = mapped_column(Float)
+    val_cont_usd: Mapped[float | None] = mapped_column(Float)
+    firmzone: Mapped[str | None] = mapped_column(String(8))
+    static_bfe_ft: Mapped[float | None] = mapped_column(Float)
+    county_fips: Mapped[str | None] = mapped_column(String(5), index=True)
+    geom = mapped_column(Geometry(geometry_type="POINT", srid=4326), nullable=False)
+
+    __table_args__ = (Index("ix_structures_geom", "geom", postgresql_using="gist"),)
+
+
+class AddressStructure(Base):
+    """Address-to-NSI-structure association with matching uncertainty."""
+
+    __tablename__ = "address_structures"
+
+    address_id: Mapped[int] = mapped_column(ForeignKey("addresses.id"), primary_key=True)
+    structure_id: Mapped[int | None] = mapped_column(ForeignKey("structures.id"), index=True)
+    match_distance_m: Mapped[float | None] = mapped_column(Float)
+    uncertainty: Mapped[str] = mapped_column(String(32))  # low | medium | high | unmatched
+
+    structure: Mapped[Structure | None] = relationship()
+
+
 # --------------------------------------------------------------------------- hazards
 class WildfireEvent(Base):
     """CAL FIRE FRAP perimeter."""

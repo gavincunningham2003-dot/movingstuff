@@ -24,7 +24,7 @@ A property insurer writing California risk needs, for every location in a portfo
 |---|---|---|
 | **Hazard** | Authoritative hazard layers per peril with their native units and an explicit probability horizon where one exists (e.g. PGA at 2 % in 50 years) | A single probability scale across perils |
 | **Exposure** | Address points, matched building footprints, user-supplied values | A substitute for a surveyed schedule of values |
-| **Vulnerability** | Documented scenario damage ratios, labelled *assumed* or *externally derived* | Building-specific fragility curves |
+| **Vulnerability** | Hazus fragility (earthquake) and depth-damage (flood) functions keyed by the matched structure's type, design level, storeys and foundation; flat documented ratios where no structure is matched | Surveyed building data or a validated proprietary vulnerability model |
 | **Financial loss** | Scenario gross loss = exposed value × damage ratio | Expected annual loss (not computed: no event frequencies or vulnerability curves) |
 | **Insured loss** | Net of deductible/limit when the user supplies them | A premium |
 
@@ -73,9 +73,12 @@ format, CRS, coverage, licence and a **verification status** recorded on 2026-10
 | CGS Quaternary faults, MS58 landslide susceptibility, tsunami hazard area | secondary hazards | yes |
 | USGS 3DEP 1-arc-second DEM tiles, EPQS | elevation/slope/aspect | yes |
 | USGS ComCat earthquake catalogue | seismic history | yes |
+| USACE National Structure Inventory | building type, storeys, year built, foundation, modelled value (Hazus vulnerability) | yes |
+| PRISM annual climate grids, US Drought Monitor county statistics | year-matched climate and drought ML features | yes |
+| LANDFIRE fuel model / canopy cover (LFPS), MRLC NLCD epochs (WCS) | year-matched fuel and land-cover ML features | yes (LF2016+; NLCD 2001-2021) |
 | FEMA NFHL flood zones, FEMA National Risk Index | flood overlay, regional benchmarks | **no** — host reset TLS connections from the dev network; schema taken from FEMA documentation |
-| NOAA Atlas 14, NOAA GSOM, US Drought Monitor, Census ACS | optional features/context | not probed |
-| MTBS, LANDFIRE, NLCD, CGS Seismic Hazard Zones | optional rasters/zones | manual download (`local_only`) |
+| NOAA Atlas 14, NOAA GSOM, Census ACS | optional features/context | not probed |
+| MTBS, LANDFIRE LF2001-2014, CGS Seismic Hazard Zones | optional rasters/zones | manual download (`local_only`) |
 
 Unavailable sources are reported as `unavailable` or `outside_coverage` on every property;
 nothing is substituted with fabricated values.
@@ -93,7 +96,7 @@ Then, in another shell (or `docker compose exec api ...`):
 cd backend
 pip install -e ".[dev]"
 catrix db upgrade
-catrix ingest all --sample 15000     # counties → addresses → perimeters → layers → faults → events → NRI → buildings → DEM → environment
+catrix ingest all --sample 15000     # counties → addresses → perimeters → layers → faults → events → NRI → buildings → DEM → NSI → climate/drought/fuel/land-cover features → environment
 catrix assess                        # every hazard module over every address
 catrix score                         # composite screening index
 catrix ml build-dataset && catrix ml train && catrix ml predict

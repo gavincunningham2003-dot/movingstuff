@@ -41,12 +41,19 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 60.0
     http_max_retries: int = 4
     http_user_agent: str = "catrix/0.1 (+https://github.com/example/catrix)"
+    # TLS verification for dataset downloads. Keep True; set a CA bundle path when a
+    # corporate proxy intercepts TLS (observed for services.nacse.org in development).
+    http_verify_ssl: bool = True
+    http_ca_bundle: Path | None = None
 
     openaddresses_token: str | None = None
     address_sample_size: int = 15000
     batch_size: int = 500
 
     mlflow_tracking_uri: str | None = None
+
+    # NSI counties above this many structures are skipped unless --include-large.
+    nsi_max_structures_per_county: int = 1_500_000
 
     # API guard rails
     max_page_size: int = 500

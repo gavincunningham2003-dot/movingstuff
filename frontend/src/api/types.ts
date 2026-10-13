@@ -97,6 +97,26 @@ export interface HazardLayerFeatureCollection {
 }
 
 // --------------------------------------------------------------------------- properties
+/** USACE National Structure Inventory attributes of the nearest structure (modelled, not surveyed). */
+export interface StructureAttributesOut {
+  structure_id?: number | null;
+  bldgtype?: string | null;
+  hazus_type?: string | null;
+  occtype?: string | null;
+  damage_category?: string | null;
+  num_story?: number | null;
+  sqft?: number | null;
+  found_type?: string | null;
+  found_ht_ft?: number | null;
+  ground_elev_ft?: number | null;
+  year_built?: number | null;
+  val_struct_usd?: number | null;
+  firmzone?: string | null;
+  match_distance_m?: number | null;
+  uncertainty?: string | null;
+  source_id: string;
+}
+
 export interface BuildingMatchOut {
   building_id?: number | null;
   footprint_area_m2?: number | null;
@@ -104,6 +124,7 @@ export interface BuildingMatchOut {
   match_distance_m?: number | null;
   buildings_within_100m?: number | null;
   uncertainty?: string | null;
+  structure?: StructureAttributesOut | null;
 }
 
 export interface EnvironmentOut {
@@ -224,6 +245,8 @@ export interface FinancialScenarioSetOut {
   exposed_value_kind: AssumptionKind | 'missing';
   scenarios: FinancialScenarioOut[];
   expected_annual_loss_available: boolean;
+  /** Present when NSI building attributes drove Hazus damage functions. */
+  building_profile?: Record<string, unknown> | null;
   note: string;
 }
 

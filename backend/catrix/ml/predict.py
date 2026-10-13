@@ -109,6 +109,11 @@ def current_year_features(
     out = pd.DataFrame(feats, index=points.index)
     for c in ("elevation_m", "slope_deg", "northness", "eastness", "buildings_within_100m"):
         out[c] = points[c].values if c in points.columns else np.nan
+    from catrix.ml.optional_features import optional_features_for_points
+
+    opt = optional_features_for_points(session, points, feature_year)
+    for c in opt.columns:
+        out[c] = opt[c].values
     return out
 
 

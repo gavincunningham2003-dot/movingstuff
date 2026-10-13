@@ -47,8 +47,16 @@ catrix ingest events
 catrix ingest nri                     # unverified host; or drop NRI_Table_Counties.csv/zip in data/raw/fema_nri_counties/
 catrix ingest buildings               # 466 MB download, filtered to sampled counties
 catrix ingest elevation --max-tiles 40
+catrix ingest nsi                     # USACE structure inventory (building attributes); --include-large for LA/SD/Orange...
+catrix ingest features                # PRISM climate, USDM drought, LANDFIRE fuels (LFPS jobs), NLCD land cover (WCS)
 catrix ingest environment
 ```
+
+`ingest features` runs the four year-matched feature connectors in turn; each one may take
+a while (PRISM downloads ~70 CONUS grids, LANDFIRE jobs are asynchronous and polled every
+15 s, NLCD fetches one WCS clip per 0.5-degree tile and epoch). They can also be run
+individually: `catrix ingest prism`, `drought`, `landfire`, `nlcd`. If the PRISM host fails
+TLS validation behind a corporate proxy, set `CATRIX_HTTP_CA_BUNDLE` to your CA file.
 
 Each connector prints `ingested | unavailable | failed` with the reason; the same state is
 visible at `GET /api/v1/data-sources`.
