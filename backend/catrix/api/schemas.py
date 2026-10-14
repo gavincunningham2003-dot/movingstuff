@@ -253,11 +253,29 @@ class FinancialScenarioOut(BaseModel):
     net_insured_loss: float | None = None
     assumptions: list[FinancialAssumptionOut]
     caveats: list[str]
+    sensitivity: list[SensitivityRowOut] = Field(default_factory=list)
+
+
+class SensitivityRowOut(BaseModel):
+    multiplier: float
+    damage_ratio: float
+    gross_loss: float | None = None
+    net_insured_loss: float | None = None
 
 
 class FinancialScenarioSetOut(BaseModel):
     exposed_value: float | None
     exposed_value_kind: Literal["observed", "externally_derived", "assumed", "missing"]
+    exposed_value_basis: Literal[
+        "replacement_value", "sum_insured_proxy", "nsi_structure", "missing"
+    ] = "missing"
+    building_value: float | None = None
+    contents_value: float | None = None
+    sum_insured: float | None = None
+    limit: float | None = None
+    limit_basis: Literal["policy_limit", "sum_insured", "none"] = "none"
+    deductible: float | None = None
+    sensitivity_multipliers: list[float] = Field(default_factory=list)
     scenarios: list[FinancialScenarioOut]
     expected_annual_loss_available: bool = False
     building_profile: dict[str, Any] | None = None
@@ -280,10 +298,32 @@ class PortfolioStatusOut(BaseModel):
     n_rows: int
     n_valid: int
     n_invalid: int
-    n_duplicates: int
+    n_duplicates: int  # exact duplicates, excluded from totals
+    n_shared_location: int = 0  # kept, reported as location accumulation
+    n_locations: int = 0  # distinct valid locations
     validation_errors: list[dict[str, Any]]
     progress: float = 0.0
     error: str | None = None
+
+
+class CsvColumnContractOut(BaseModel):
+    name: str
+    required: bool
+    description: str
+    aliases: list[str]
+
+
+class LocationAccumulationOut(BaseModel):
+    location_key: str
+    lat: float
+    lon: float
+    n_exposures: int
+    property_ids: list[str]
+    policy_ids: list[str]
+    total_insured_value: float | None
+    total_replacement_value: float | None
+    share_of_tiv_pct: float | None
+    composite_score: float | None
 
 
 class CountySummaryOut(BaseModel):
@@ -327,6 +367,7 @@ class PortfolioAnalysisOut(BaseModel):
     by_county: list[CountySummaryOut]
     concentration: list[ConcentrationCellOut]
     top_exposures: list[TopExposureOut]
+    location_accumulation: list[LocationAccumulationOut] = Field(default_factory=list)
     financial: dict[str, Any] | None
     warnings: list[str]
 

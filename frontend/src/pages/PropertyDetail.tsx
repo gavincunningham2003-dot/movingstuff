@@ -483,6 +483,15 @@ export function PropertyDetail() {
           subtitle={
             <span>
               Exposed value {fmtUsd(d.financial.exposed_value)} <AssumptionKindBadge kind={d.financial.exposed_value_kind} />
+              {d.financial.exposed_value_basis && d.financial.exposed_value_basis !== 'missing' && (
+                <span className="text-slate-500"> ({humanize(d.financial.exposed_value_basis)})</span>
+              )}
+              {d.financial.limit != null && (
+                <span>
+                  {' '}· limit {fmtUsd(d.financial.limit)}
+                  {d.financial.limit_basis === 'sum_insured' && <span className="text-slate-500"> (sum insured)</span>}
+                </span>
+              )}
               {d.financial.expected_annual_loss_available ? ' · expected annual loss available' : ' · no expected annual loss (scenario losses only)'}
             </span>
           }

@@ -110,6 +110,31 @@ function ScenarioRows({
                 ) : (
                   <CaveatList items={s.caveats} />
                 )}
+                {s.sensitivity && s.sensitivity.length > 0 && (
+                  <div className="mt-3">
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Damage-ratio sensitivity</div>
+                    <table className="text-xs">
+                      <thead className="text-slate-400">
+                        <tr>
+                          <th className="pr-3 text-left font-medium">Ratio ×</th>
+                          <th className="pr-3 text-right font-medium">Damage ratio</th>
+                          <th className="pr-3 text-right font-medium">Gross</th>
+                          <th className="text-right font-medium">Net</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {s.sensitivity.map((r) => (
+                          <tr key={r.multiplier}>
+                            <td className="pr-3 text-slate-300">{r.multiplier}</td>
+                            <td className="tabular pr-3 text-right">{r.damage_ratio == null ? '—' : fmtFracPct(r.damage_ratio)}</td>
+                            <td className="tabular pr-3 text-right text-amber-200">{fmtUsd(r.gross_loss)}</td>
+                            <td className="tabular text-right text-teal-200">{fmtUsd(r.net_insured_loss)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           </td>

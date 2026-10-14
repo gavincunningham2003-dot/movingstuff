@@ -6,15 +6,24 @@ import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'rea
 import MapGL, { Layer, NavigationControl, Popup, Source, type LayerProps, type MapLayerMouseEvent } from 'react-map-gl/maplibre';
 
 import { apiLinks } from '../api/client';
-import { usePortfolioAnalysis, usePortfolios, usePortfolioStatus, useUploadPortfolio } from '../api/hooks';
-import type { ConcentrationCellOut, PortfolioAnalysisOut, PortfolioStatusOut, TopExposureOut } from '../api/types';
+import { useCsvContract, usePortfolioAnalysis, usePortfolios, usePortfolioStatus, useUploadPortfolio } from '../api/hooks';
+import type {
+  ConcentrationCellOut,
+  CsvColumnContractOut,
+  LocationAccumulationOut,
+  PortfolioAnalysisOut,
+  PortfolioFinancial,
+  PortfolioScenarioTotal,
+  PortfolioStatusOut,
+  TopExposureOut,
+  ValidationIssue,
+} from '../api/types';
 import { HazardDistributionPanel } from '../components/charts/HazardDistributionPanel';
-import { FinancialScenariosTable } from '../components/finance/FinancialScenariosTable';
 import { PageBody } from '../components/layout/PageBody';
 import { DARK_BASEMAP } from '../components/map/basemap';
 import { expr, pointColorExpression, pointLegend } from '../components/map/expressions';
 import { countyColumns, countyRowKey } from '../components/tables/countyColumns';
-import { AssumptionKindBadge, Badge, JobStatusBadge } from '../components/ui/Badge';
+import { Badge, JobStatusBadge } from '../components/ui/Badge';
 import { Card } from '../components/ui/Card';
 import { CaveatBanner, ScreeningIndexCaveat } from '../components/ui/CaveatBanner';
 import { DataTable, type Column } from '../components/ui/DataTable';
@@ -32,25 +41,32 @@ import { PORTFOLIO_SUMMARY_LABELS } from '../lib/summaryStats';
 
 // --------------------------------------------------------------------------- CSV preview helpers
 
-interface ColumnHint {
-  name: string;
-  required: boolean;
-  description: string;
-  aliases: string[];
-}
+type ColumnHint = CsvColumnContractOut;
 
-const COLUMN_HINTS: ColumnHint[] = [
-  { name: 'property_id', required: false, description: 'Your identifier for the property (generated when missing)', aliases: ['id', 'propertyid', 'prop_id', 'location_id'] },
-  { name: 'latitude', required: true, description: 'Decimal degrees, WGS84', aliases: ['lat', 'y'] },
-  { name: 'longitude', required: true, description: 'Decimal degrees, WGS84', aliases: ['lon', 'lng', 'long', 'x'] },
-  { name: 'address', required: false, description: 'Street address, used for display', aliases: ['street', 'addr', 'street_address'] },
-  { name: 'property_value', required: false, description: 'Replacement or market value, USD', aliases: ['value', 'tiv', 'total_insured_value', 'replacement_value'] },
-  { name: 'insured_value', required: false, description: 'Sum insured, USD (used for net loss scenarios)', aliases: ['sum_insured', 'insured', 'limit', 'si'] },
-  { name: 'policy_id', required: false, description: 'Policy reference', aliases: ['policy', 'policy_number', 'policy_no'] },
+/**
+ * Fallback mirror of the server contract (GET /portfolio/csv-contract), used only until
+ * the live contract loads. The server's table is authoritative: the parser and this
+ * preview read the same aliases.
+ */
+const FALLBACK_COLUMN_HINTS: ColumnHint[] = [
+  { name: 'property_id', required: false, description: 'Your identifier for the exposure; generated as row-<n> when missing.', aliases: ['property_id', 'propertyid', 'prop_id', 'id', 'location_id', 'loc_id', 'ref'] },
+  { name: 'latitude', required: true, description: 'Decimal degrees, WGS84.', aliases: ['latitude', 'lat', 'y'] },
+  { name: 'longitude', required: true, description: 'Decimal degrees, WGS84.', aliases: ['longitude', 'lon', 'lng', 'long', 'x'] },
+  { name: 'address', required: false, description: 'Street address, used for display only.', aliases: ['address', 'street_address', 'street', 'addr'] },
+  { name: 'property_value', required: false, description: 'Building replacement value, USD (basis of gross physical loss).', aliases: ['property_value', 'building_value', 'replacement_value', 'replacement_cost', 'rcv', 'value'] },
+  { name: 'contents_value', required: false, description: 'Contents replacement value, USD (added to the building value).', aliases: ['contents_value', 'contents', 'contents_insured_value'] },
+  { name: 'insured_value', required: false, description: 'Sum insured / total insured value, USD (caps net insured loss when no limit is given).', aliases: ['insured_value', 'tiv', 'total_insured_value', 'sum_insured', 'insured', 'si'] },
+  { name: 'limit', required: false, description: 'Policy limit, USD (defaults to the sum insured).', aliases: ['limit', 'policy_limit', 'coverage_limit'] },
+  { name: 'deductible', required: false, description: 'Policy deductible, USD.', aliases: ['deductible', 'ded', 'deductible_amount'] },
+  { name: 'policy_id', required: false, description: 'Policy reference.', aliases: ['policy_id', 'policy', 'policy_number', 'policy_no', 'account_id'] },
 ];
 
+/** Same normalisation as the server: "Policy Limit", "policy-limit" and "POLICY_LIMIT" all match `policy_limit`. */
 function normaliseName(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function matchColumn(hint: ColumnHint, fields: string[]): string | null {
@@ -279,6 +295,124 @@ function PortfolioMap({ analysis }: { analysis: PortfolioAnalysisOut }) {
 
 // --------------------------------------------------------------------------- tables
 
+const accumulationColumns: Column<LocationAccumulationOut>[] = [
+  {
+    key: 'location',
+    header: 'Location',
+    sortable: false,
+    render: (r) => (
+      <span className="font-mono text-xs">
+        {fmtCoord(r.lat)}, {fmtCoord(r.lon)}
+      </span>
+    ),
+  },
+  { key: 'n_exposures', header: 'Exposures', align: 'right', value: (r) => r.n_exposures, render: (r) => fmtInt(r.n_exposures) },
+  {
+    key: 'ids',
+    header: 'Property ids · policies',
+    sortable: false,
+    render: (r) => (
+      <span className="text-xs">
+        <span className="font-mono text-slate-200">{r.property_ids.join(', ')}</span>
+        {r.policy_ids.length > 0 && <span className="text-slate-500"> · {r.policy_ids.join(', ')}</span>}
+      </span>
+    ),
+  },
+  { key: 'total_insured_value', header: 'Sum insured', align: 'right', value: (r) => r.total_insured_value, render: (r) => fmtUsd(r.total_insured_value) },
+  { key: 'total_replacement_value', header: 'Replacement value', align: 'right', value: (r) => r.total_replacement_value, render: (r) => fmtUsd(r.total_replacement_value) },
+  { key: 'share_of_tiv_pct', header: '% of TIV', align: 'right', value: (r) => r.share_of_tiv_pct, render: (r) => fmtPct(r.share_of_tiv_pct) },
+  { key: 'composite_score', header: 'Screening index', align: 'right', value: (r) => r.composite_score, render: (r) => fmtScore(r.composite_score) },
+];
+
+const scenarioTotalColumns: Column<PortfolioScenarioTotal>[] = [
+  { key: 'scenario_id', header: 'Scenario', className: 'font-mono text-xs' },
+  { key: 'hazard_id', header: 'Hazard', render: (r) => <Badge>{r.hazard_id}</Badge> },
+  { key: 'description', header: 'Description', className: 'max-w-xs text-slate-300', sortable: false },
+  { key: 'n_properties', header: 'Exposures', align: 'right', value: (r) => r.n_properties, render: (r) => fmtInt(r.n_properties) },
+  { key: 'exposed_value', header: 'Exposed value', align: 'right', value: (r) => r.exposed_value, render: (r) => fmtUsd(r.exposed_value) },
+  { key: 'gross_loss', header: 'Gross loss', align: 'right', value: (r) => r.gross_loss, render: (r) => <span className="font-semibold text-amber-200">{fmtUsd(r.gross_loss)}</span> },
+  {
+    key: 'net_insured_loss',
+    header: 'Net insured loss',
+    align: 'right',
+    value: (r) => r.net_insured_loss,
+    render: (r) => (
+      <span>
+        <span className="font-semibold text-teal-200">{fmtUsd(r.net_insured_loss)}</span>
+        <span className="block text-xs text-slate-500">
+          {fmtInt(r.n_with_terms)} with terms{r.n_without_terms ? ` · ${fmtInt(r.n_without_terms)} without` : ''}
+        </span>
+      </span>
+    ),
+  },
+  {
+    key: 'sensitivity',
+    header: 'Ratio ×0.5 / ×1.5 (gross)',
+    align: 'right',
+    sortable: false,
+    render: (r) => {
+      const by = new Map((r.sensitivity ?? []).map((x) => [x.multiplier, x]));
+      const lo = by.get(0.5);
+      const hi = by.get(1.5);
+      if (!lo && !hi) return <span className="text-slate-500">—</span>;
+      return (
+        <span className="tabular text-xs text-slate-300">
+          {fmtUsdCompact(lo?.gross_loss ?? null)} / {fmtUsdCompact(hi?.gross_loss ?? null)}
+        </span>
+      );
+    },
+  },
+];
+
+function FinancialTotals({ fin }: { fin: PortfolioFinancial }) {
+  const tiles: { label: string; value: string; hint?: string }[] = [
+    {
+      label: 'Sum insured (TIV)',
+      value: fmtUsdCompact(fin.total_insured_value ?? null),
+      hint: `${fmtInt(fin.n_with_insured_value ?? 0)} of ${fmtInt(fin.n_exposures ?? 0)} exposures`,
+    },
+    {
+      label: 'Replacement value',
+      value: fmtUsdCompact(fin.total_replacement_value ?? null),
+      hint: `building ${fmtUsdCompact(fin.total_property_value ?? null)} · contents ${fmtUsdCompact(fin.total_contents_value ?? null)}`,
+    },
+    {
+      label: 'Policy limits',
+      value: fmtUsdCompact(fin.total_policy_limit ?? null),
+      hint: `${fmtInt(fin.n_with_limit ?? 0)} explicit · others use the sum insured`,
+    },
+    {
+      label: 'Deductibles',
+      value: fmtUsdCompact(fin.total_deductible ?? null),
+      hint: `${fmtInt(fin.n_with_deductible ?? 0)} exposures`,
+    },
+  ];
+  const basis = fin.exposed_value_basis_counts ?? {};
+  return (
+    <div className="space-y-3 p-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {tiles.map((t) => (
+          <StatTile key={t.label} label={t.label} value={t.value} hint={t.hint} />
+        ))}
+      </div>
+      {Object.keys(basis).length > 0 && (
+        <div className="text-xs text-slate-400">
+          Gross loss basis:{' '}
+          {Object.entries(basis)
+            .map(([k, v]) => `${humanize(k)} (${fmtInt(v)})`)
+            .join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function issueTone(sev: ValidationIssue['severity']): 'red' | 'amber' | 'neutral' {
+  if (sev === 'error') return 'red';
+  if (sev === 'warning') return 'amber';
+  return 'neutral';
+}
+
 const exposureColumns: Column<TopExposureOut>[] = [
   { key: 'property_id', header: 'Property', className: 'font-mono text-xs' },
   { key: 'county', header: 'County', value: (r) => r.county ?? null },
@@ -381,13 +515,23 @@ export function PortfolioAnalysis() {
     );
   }
 
+  const contractQ = useCsvContract();
+  const columnHints: ColumnHint[] = contractQ.data && contractQ.data.length > 0 ? contractQ.data : FALLBACK_COLUMN_HINTS;
   const mapping = useMemo(
-    () => (preview ? COLUMN_HINTS.map((h) => ({ hint: h, matched: matchColumn(h, preview.fields) })) : []),
-    [preview],
+    () => (preview ? columnHints.map((h) => ({ hint: h, matched: matchColumn(h, preview.fields) })) : []),
+    [preview, columnHints],
   );
+  const issues: ValidationIssue[] = status?.validation_errors ?? [];
+  const issueCounts = {
+    error: issues.filter((e) => e.severity === 'error' || (!e.severity && e.row != null)).length,
+    warning: issues.filter((e) => e.severity === 'warning').length,
+    info: issues.filter((e) => e.severity === 'info' || (!e.severity && e.row == null)).length,
+  };
   const missingRequired = mapping.filter((m) => m.hint.required && !m.matched).map((m) => m.hint.name);
   const tiles = analysis ? summaryTiles(analysis.summary) : [];
-  const financialScenarios = analysis?.financial && Array.isArray(analysis.financial.scenarios) ? analysis.financial.scenarios : [];
+  const financialScenarios: PortfolioScenarioTotal[] =
+    analysis?.financial && Array.isArray(analysis.financial.scenarios) ? analysis.financial.scenarios : [];
+  const accumulation: LocationAccumulationOut[] = analysis?.location_accumulation ?? [];
   const inProgress = !!portfolioId && (statusQ.isLoading || status?.status === 'pending' || status?.status === 'running');
 
   return (
@@ -483,14 +627,17 @@ export function PortfolioAnalysis() {
           )}
         </Card>
 
-        <Card title="Column mapping" subtitle="Expected columns and what was detected in your file">
+        <Card
+          title="Column mapping"
+          subtitle={contractQ.data ? 'Contract served by the API; the parser uses the same aliases' : 'Expected columns and what was detected in your file'}
+        >
           {missingRequired.length > 0 && (
             <CaveatBanner tone="red" className="mb-3 text-xs" title="Required columns missing">
               {missingRequired.join(', ')} — the server will reject rows without coordinates.
             </CaveatBanner>
           )}
           <ul className="space-y-2 text-sm">
-            {COLUMN_HINTS.map((h) => {
+            {columnHints.map((h) => {
               const m = mapping.find((x) => x.hint.name === h.name);
               return (
                 <li key={h.name} className="rounded border border-slate-800 px-2 py-1.5">
@@ -502,6 +649,9 @@ export function PortfolioAnalysis() {
                     </span>
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500">{h.description}</div>
+                  <div className="mt-0.5 truncate text-[11px] text-slate-600" title={h.aliases.join(', ')}>
+                    aliases: {h.aliases.join(', ')}
+                  </div>
                 </li>
               );
             })}
@@ -528,31 +678,35 @@ export function PortfolioAnalysis() {
                 tone={status.status === 'failed' ? 'red' : 'teal'}
                 indeterminate={status.status === 'pending' && !status.progress}
               />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 <StatTile label="Rows" value={fmtInt(status.n_rows)} />
                 <StatTile label="Valid" value={fmtInt(status.n_valid)} accent="teal" />
-                <StatTile label="Invalid" value={fmtInt(status.n_invalid)} accent={status.n_invalid > 0 ? 'amber' : 'default'} />
-                <StatTile label="Duplicates" value={fmtInt(status.n_duplicates)} />
+                <StatTile label="Invalid" value={fmtInt(status.n_invalid)} accent={status.n_invalid > 0 ? 'amber' : 'default'} hint="rows rejected" />
+                <StatTile label="Exact duplicates" value={fmtInt(status.n_duplicates)} hint="same id + location; excluded" />
+                <StatTile label="Shared locations" value={fmtInt(status.n_shared_location ?? 0)} hint="kept; see accumulation" />
+                <StatTile label="Distinct locations" value={fmtInt(status.n_locations ?? 0)} />
               </div>
               {status.status === 'failed' && (
                 <CaveatBanner tone="red" title="Analysis failed">
                   {status.error ?? 'The server reported a failure without details.'}
                 </CaveatBanner>
               )}
-              {status.validation_errors.length > 0 && (
+              {issues.length > 0 && (
                 <details>
                   <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Validation errors ({fmtInt(status.validation_errors.length)})
+                    Validation issues ({fmtInt(issues.length)}): {fmtInt(issueCounts.error)} row errors · {fmtInt(issueCounts.warning)} field warnings ·{' '}
+                    {fmtInt(issueCounts.info)} notes
                   </summary>
-                  <ul className="mt-2 max-h-48 space-y-1 overflow-auto text-xs">
-                    {status.validation_errors.slice(0, 50).map((e, i) => (
-                      <li key={i} className="rounded border border-slate-800 px-2 py-1 text-slate-300">
-                        {Object.entries(e)
-                          .map(([k, v]) => `${humanize(k)}: ${fmtAny(v)}`)
-                          .join(' · ')}
+                  <ul className="mt-2 max-h-56 space-y-1 overflow-auto text-xs">
+                    {issues.slice(0, 80).map((e, i) => (
+                      <li key={i} className="flex flex-wrap items-center gap-2 rounded border border-slate-800 px-2 py-1 text-slate-300">
+                        <Badge tone={issueTone(e.severity)}>{e.severity ?? (e.row != null ? 'error' : 'info')}</Badge>
+                        {e.row != null && <span className="font-mono text-slate-400">row {fmtInt(e.row)}</span>}
+                        {e.field && <span className="font-mono text-slate-400">{e.field}</span>}
+                        <span>{e.error}</span>
                       </li>
                     ))}
-                    {status.validation_errors.length > 50 && <li className="text-slate-500">… {fmtInt(status.validation_errors.length - 50)} more</li>}
+                    {issues.length > 80 && <li className="text-slate-500">… {fmtInt(issues.length - 80)} more</li>}
                   </ul>
                 </details>
               )}
@@ -633,23 +787,43 @@ export function PortfolioAnalysis() {
               </Card>
 
               <Card
+                title="Location accumulation"
+                subtitle="Several exposures at one site (within ~5 m): kept in every total, and the first place to look for a single-event pile-up"
+                className="mt-4"
+                flush
+              >
+                <DataTable
+                  columns={accumulationColumns}
+                  rows={accumulation}
+                  rowKey={(r) => r.location_key}
+                  initialSort={{ key: 'total_insured_value', dir: 'desc' }}
+                  dense
+                  maxHeight="360px"
+                  emptyMessage="No two exposures share a location."
+                />
+              </Card>
+
+              <Card
                 title="Financial scenarios"
                 subtitle={
-                  analysis.financial ? (
-                    <span>
-                      Exposed value {fmtUsd(isNum(analysis.financial.exposed_value) ? analysis.financial.exposed_value : null)}{' '}
-                      {typeof analysis.financial.exposed_value_kind === 'string' && <AssumptionKindBadge kind={analysis.financial.exposed_value_kind} />}
-                    </span>
-                  ) : (
-                    'Not available'
-                  )
+                  analysis.financial
+                    ? 'Each kind of money is totalled separately; gross is physical damage to the replacement value, net applies each exposure\'s deductible and limit'
+                    : 'Not available'
                 }
                 className="mt-4"
                 flush
               >
                 {analysis.financial ? (
                   <>
-                    <FinancialScenariosTable scenarios={financialScenarios} />
+                    <FinancialTotals fin={analysis.financial} />
+                    <DataTable
+                      columns={scenarioTotalColumns}
+                      rows={financialScenarios}
+                      rowKey={(r) => r.scenario_id}
+                      initialSort={{ key: 'gross_loss', dir: 'desc' }}
+                      dense
+                      emptyMessage="No scenario triggered for any exposure."
+                    />
                     {typeof analysis.financial.note === 'string' && analysis.financial.note && (
                       <div className="border-t border-slate-800 p-4">
                         <CaveatBanner title="Scenario note">{analysis.financial.note}</CaveatBanner>
@@ -658,7 +832,7 @@ export function PortfolioAnalysis() {
                   </>
                 ) : (
                   <div className="p-4">
-                    <EmptyState compact title="No financial scenarios" message="The upload had no insured or property values, so no loss scenarios were computed." />
+                    <EmptyState compact title="No financial scenarios" message="The upload had no replacement, contents or insured values, so no loss scenarios were computed." />
                   </div>
                 )}
               </Card>

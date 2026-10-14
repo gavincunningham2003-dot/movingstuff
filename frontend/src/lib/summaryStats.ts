@@ -76,11 +76,16 @@ export function distributionRows(counts: Record<string, number> | undefined): Di
 
 /** Known summary keys of PortfolioAnalysisOut.summary with display labels. */
 export const PORTFOLIO_SUMMARY_LABELS: Record<string, string> = {
-  n_properties: 'Properties',
+  n_properties: 'Exposures',
+  n_exposures: 'Exposures',
+  n_locations: 'Distinct locations',
   n_rows: 'Rows received',
   n_valid: 'Valid rows',
   n_invalid: 'Invalid rows',
-  n_duplicates: 'Duplicates',
+  n_duplicates: 'Exact duplicates',
+  n_duplicates_excluded: 'Exact duplicates excluded',
+  n_shared_location_exposures: 'Shared-location exposures',
+  n_repeated_ids: 'Repeated ids',
   n_geocoded: 'Geocoded',
   n_counties: 'Counties',
   total_insured_value: 'Total insured value',

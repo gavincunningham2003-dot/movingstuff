@@ -262,11 +262,32 @@ export interface FinancialScenarioOut {
   net_insured_loss?: number | null;
   assumptions: FinancialAssumptionOut[];
   caveats: string[];
+  /** Gross/net with the damage ratio scaled by `multiplier` (ratio capped at 1). */
+  sensitivity?: SensitivityRowOut[];
 }
+
+export interface SensitivityRowOut {
+  multiplier: number;
+  damage_ratio?: number;
+  gross_loss: number | null;
+  net_insured_loss: number | null;
+  n_with_terms?: number;
+}
+
+export type ExposedValueBasis = 'replacement_value' | 'sum_insured_proxy' | 'nsi_structure' | 'missing';
+export type LimitBasis = 'policy_limit' | 'sum_insured' | 'none';
 
 export interface FinancialScenarioSetOut {
   exposed_value: number | null;
   exposed_value_kind: AssumptionKind | 'missing';
+  exposed_value_basis?: ExposedValueBasis;
+  building_value?: number | null;
+  contents_value?: number | null;
+  sum_insured?: number | null;
+  limit?: number | null;
+  limit_basis?: LimitBasis;
+  deductible?: number | null;
+  sensitivity_multipliers?: number[];
   scenarios: FinancialScenarioOut[];
   expected_annual_loss_available: boolean;
   /** Present when NSI building attributes drove Hazus damage functions. */
@@ -292,10 +313,59 @@ export interface PortfolioStatusOut {
   n_rows: number;
   n_valid: number;
   n_invalid: number;
+  /** Exact duplicates (same id at the same location); excluded from totals. */
   n_duplicates: number;
-  validation_errors: Record<string, unknown>[];
+  /** Exposures sharing a location with another exposure; kept and reported. */
+  n_shared_location?: number;
+  /** Distinct valid locations. */
+  n_locations?: number;
+  validation_errors: ValidationIssue[];
   progress: number;
   error?: string | null;
+}
+
+export interface ValidationIssue {
+  row?: number | null;
+  error: string;
+  severity?: 'error' | 'warning' | 'info';
+  field?: string;
+  value?: string;
+  [key: string]: unknown;
+}
+
+export interface CsvColumnContractOut {
+  name: string;
+  required: boolean;
+  description: string;
+  aliases: string[];
+}
+
+export interface LocationAccumulationOut {
+  location_key: string;
+  lat: number;
+  lon: number;
+  n_exposures: number;
+  property_ids: string[];
+  policy_ids: string[];
+  total_insured_value: number | null;
+  total_replacement_value: number | null;
+  share_of_tiv_pct: number | null;
+  composite_score: number | null;
+}
+
+export interface PortfolioScenarioTotal {
+  scenario_id: string;
+  hazard_id: string;
+  description: string;
+  damage_ratio: number;
+  n_properties: number;
+  n_with_value?: number;
+  exposed_value: number;
+  gross_loss: number;
+  net_insured_loss: number | null;
+  n_with_terms: number;
+  n_without_terms?: number;
+  sensitivity?: SensitivityRowOut[];
 }
 
 export interface CountySummaryOut {
@@ -341,9 +411,21 @@ export type CoverageCounts = Record<string, Record<string, number>>;
  * unknown extra keys are tolerated.
  */
 export interface PortfolioFinancial {
-  exposed_value?: number | null;
-  exposed_value_kind?: string | null;
-  scenarios?: FinancialScenarioOut[];
+  n_exposures?: number;
+  n_with_insured_value?: number;
+  n_with_property_value?: number;
+  n_with_contents_value?: number;
+  n_with_limit?: number;
+  n_with_deductible?: number;
+  total_insured_value?: number | null;
+  total_property_value?: number | null;
+  total_contents_value?: number | null;
+  total_replacement_value?: number | null;
+  total_policy_limit?: number | null;
+  total_deductible?: number | null;
+  exposed_value_basis_counts?: Record<string, number>;
+  limit_basis_counts?: Record<string, number>;
+  scenarios?: PortfolioScenarioTotal[];
   note?: string | null;
   [key: string]: unknown;
 }
@@ -357,6 +439,7 @@ export interface PortfolioAnalysisOut {
   by_county: CountySummaryOut[];
   concentration: ConcentrationCellOut[];
   top_exposures: TopExposureOut[];
+  location_accumulation?: LocationAccumulationOut[];
   financial: PortfolioFinancial | null;
   warnings: string[];
 }

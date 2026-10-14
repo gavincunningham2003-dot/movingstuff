@@ -16,8 +16,15 @@ Damage ratios come from two tiers:
 Expected annual loss is **not** computed: CATRIX has no property-level event frequencies,
 and heuristic scores are never used as probabilities.
 
-Exposed value precedence: user insured value → user property value → NSI depreciated
-structure value (``externally_derived``) → missing.
+Exposed (physical) value precedence: user building replacement value (+ contents value)
+→ user sum insured used as a proxy → NSI depreciated structure value
+(``externally_derived``) → missing. The sum insured is a *policy* quantity: it caps the
+net insured loss (as the limit when no explicit limit is given) and is never added to the
+replacement value.
+
+Sensitivity: every scenario also reports gross and net losses with the damage ratio
+scaled by ``SENSITIVITY_MULTIPLIERS`` (ratio capped at 1), so that the effect of the
+assumed vulnerability on the result is visible rather than hidden.
 """
 
 from __future__ import annotations
@@ -38,7 +45,8 @@ from catrix.hazards.base import HazardResult
 
 Kind = Literal["observed", "externally_derived", "assumed"]
 
-ASSUMPTIONS_VERSION = "fs-2.0"
+ASSUMPTIONS_VERSION = "fs-2.1"
+SENSITIVITY_MULTIPLIERS = (0.5, 1.0, 1.5)
 
 
 @dataclass(frozen=True)
@@ -146,6 +154,7 @@ class ScenarioLoss:
     net_insured_loss: float | None
     assumptions: list[Assumption]
     caveats: list[str] = field(default_factory=list)
+    sensitivity: list[dict[str, float | None]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d = self.__dict__.copy()
@@ -162,26 +171,108 @@ def apply_policy_terms(gross: float, deductible: float | None, limit: float | No
     return net
 
 
+ExposedBasis = Literal["replacement_value", "sum_insured_proxy", "nsi_structure", "missing"]
+ValueKind = Literal["observed", "externally_derived", "assumed", "missing"]
+LimitBasis = Literal["policy_limit", "sum_insured", "none"]
+
+
 def resolve_exposed_value(
     insured_value: float | None,
     property_value: float | None,
     structure_value: float | None = None,
-) -> tuple[float | None, Literal["observed", "externally_derived", "assumed", "missing"], str]:
+    contents_value: float | None = None,
+) -> tuple[float | None, ValueKind, str]:
+    """Physical value at risk, with its provenance kind and a one-line basis.
+
+    Replacement values (building + contents) come first because gross loss is a
+    *physical* quantity; the sum insured is only a proxy for it when nothing else is
+    known. :func:`exposed_value_basis` gives the machine-readable basis."""
+    value, _basis, kind, text = _resolve(
+        insured_value, property_value, structure_value, contents_value
+    )
+    return value, kind, text
+
+
+def exposed_value_basis(
+    insured_value: float | None,
+    property_value: float | None,
+    structure_value: float | None = None,
+    contents_value: float | None = None,
+) -> ExposedBasis:
+    return _resolve(insured_value, property_value, structure_value, contents_value)[1]
+
+
+def _resolve(
+    insured_value: float | None,
+    property_value: float | None,
+    structure_value: float | None,
+    contents_value: float | None,
+) -> tuple[float | None, ExposedBasis, ValueKind, str]:
+    building = float(property_value) if property_value is not None and property_value > 0 else None
+    contents = float(contents_value) if contents_value is not None and contents_value > 0 else None
+    if building is not None or contents is not None:
+        total = (building or 0.0) + (contents or 0.0)
+        parts = []
+        if building is not None:
+            parts.append("building replacement value")
+        if contents is not None:
+            parts.append("contents value")
+        return total, "replacement_value", "observed", "user-supplied " + " + ".join(parts)
     if insured_value is not None and insured_value > 0:
-        return float(insured_value), "observed", "user-supplied insured value"
-    if property_value is not None and property_value > 0:
         return (
-            float(property_value),
+            float(insured_value),
+            "sum_insured_proxy",
             "observed",
-            "user-supplied property value (used as proxy for exposed value)",
+            "user-supplied sum insured used as a proxy for replacement value "
+            "(no replacement value given)",
         )
     if structure_value is not None and structure_value > 0:
         return (
             float(structure_value),
+            "nsi_structure",
             "externally_derived",
             "NSI depreciated structure replacement value (modelled, not surveyed)",
         )
-    return None, "missing", "no value supplied"
+    return None, "missing", "missing", "no value supplied"
+
+
+def resolve_limit(
+    limit: float | None, insured_value: float | None
+) -> tuple[float | None, LimitBasis]:
+    """Explicit policy limit, else the sum insured (a policy never pays more than it
+    insures), else no cap."""
+    if limit is not None and limit > 0:
+        return float(limit), "policy_limit"
+    if insured_value is not None and insured_value > 0:
+        return float(insured_value), "sum_insured"
+    return None, "none"
+
+
+def sensitivity_rows(
+    ratio: float,
+    exposed: float | None,
+    deductible: float | None,
+    limit: float | None,
+) -> list[dict[str, float | None]]:
+    """Gross/net loss with the damage ratio scaled by each multiplier (ratio capped at 1)."""
+    rows: list[dict[str, float | None]] = []
+    for m in SENSITIVITY_MULTIPLIERS:
+        r = min(ratio * m, 1.0)
+        gross = None if exposed is None else exposed * r
+        net = (
+            None
+            if gross is None or (deductible is None and limit is None)
+            else apply_policy_terms(gross, deductible, limit)
+        )
+        rows.append(
+            {
+                "multiplier": m,
+                "damage_ratio": round(r, 4),
+                "gross_loss": None if gross is None else round(gross, 2),
+                "net_insured_loss": None if net is None else round(net, 2),
+            }
+        )
+    return rows
 
 
 def _finish(
@@ -195,6 +286,8 @@ def _finish(
     deductible: float | None,
     limit: float | None,
     caveats: list[str],
+    *,
+    limit_basis: LimitBasis = "policy_limit",
 ) -> ScenarioLoss:
     gross = exposed * ratio if exposed is not None else None
     net = None
@@ -204,7 +297,16 @@ def _finish(
         if deductible is not None:
             assumptions.append(Assumption("deductible", deductible, "observed", "user-supplied"))
         if limit is not None:
-            assumptions.append(Assumption("limit", limit, "observed", "user-supplied"))
+            assumptions.append(
+                Assumption(
+                    "limit",
+                    limit,
+                    "observed",
+                    "user-supplied policy limit"
+                    if limit_basis == "policy_limit"
+                    else "sum insured used as the limit (no explicit policy limit)",
+                )
+            )
     cav = [
         "Scenario loss for an assumed event, not an expected annual loss.",
         *caveats,
@@ -223,6 +325,7 @@ def _finish(
         None if net is None else round(net, 2),
         assumptions,
         cav,
+        sensitivity_rows(ratio, exposed, deductible, limit),
     )
 
 
@@ -234,10 +337,13 @@ def compute_scenarios(
     property_value: float | None = None,
     deductible: float | None = None,
     limit: float | None = None,
+    contents_value: float | None = None,
 ) -> dict[str, Any]:
-    exposed, kind, basis = resolve_exposed_value(
-        insured_value, property_value, building.val_struct_usd if building else None
+    structure_value = building.val_struct_usd if building else None
+    exposed, exposed_basis, kind, basis = _resolve(
+        insured_value, property_value, structure_value, contents_value
     )
+    limit, limit_basis = resolve_limit(limit, insured_value)
     exposed_assumption = Assumption(
         "exposed_value",
         exposed if exposed is not None else "missing",
@@ -245,6 +351,10 @@ def compute_scenarios(
         basis,
     )
     out: list[ScenarioLoss] = []
+
+    def finish(*args: Any) -> ScenarioLoss:
+        return _finish(*args, limit_basis=limit_basis)
+
     building_caveat = (
         "Vulnerability is not building-specific (construction, year built and storeys are unknown)."
         if building is None
@@ -266,7 +376,7 @@ def compute_scenarios(
                 )
             )
         out.append(
-            _finish(
+            finish(
                 s.scenario_id,
                 s.hazard_id,
                 s.description,
@@ -307,7 +417,7 @@ def compute_scenarios(
                 ),
             )
             out.append(
-                _finish(
+                finish(
                     f"{hid}_hazus_fragility",
                     hid,
                     f"Shaking at the {label} PGA ({eq.value:.2f} g): Hazus fragility for {dmg.hazus_type} ({dmg.design_level}-code)",
@@ -330,7 +440,7 @@ def compute_scenarios(
             for s in FLAT_SCENARIOS:
                 if s.hazard_id == "earthquake_pga" and s.applies(eq):
                     out.append(
-                        _finish(
+                        finish(
                             s.scenario_id,
                             s.hazard_id,
                             s.description,
@@ -381,7 +491,7 @@ def compute_scenarios(
                     else f"1%-annual-chance flood, assumed {d:g} ft above first floor, Hazus depth-damage ({curve})"
                 )
                 out.append(
-                    _finish(
+                    finish(
                         sid,
                         "flood_nfhl",
                         desc,
@@ -400,7 +510,7 @@ def compute_scenarios(
         else:
             s = next(x for x in FLAT_SCENARIOS if x.scenario_id == "flood_sfha_1pct_event")
             out.append(
-                _finish(
+                finish(
                     s.scenario_id,
                     s.hazard_id,
                     s.description,
@@ -417,6 +527,20 @@ def compute_scenarios(
     return {
         "exposed_value": exposed,
         "exposed_value_kind": kind,
+        "exposed_value_basis": exposed_basis,
+        "building_value": (
+            None if property_value is None or property_value <= 0 else float(property_value)
+        ),
+        "contents_value": (
+            None if contents_value is None or contents_value <= 0 else float(contents_value)
+        ),
+        "sum_insured": None
+        if insured_value is None or insured_value <= 0
+        else float(insured_value),
+        "limit": limit,
+        "limit_basis": limit_basis,
+        "deductible": deductible,
+        "sensitivity_multipliers": list(SENSITIVITY_MULTIPLIERS),
         "scenarios": [s.to_dict() for s in out],
         "expected_annual_loss_available": False,
         "building_profile": (

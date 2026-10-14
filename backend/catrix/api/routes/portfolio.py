@@ -11,6 +11,7 @@ from sqlalchemy import func, select, text
 
 from catrix.api.deps import DB
 from catrix.api.schemas import (
+    CsvColumnContractOut,
     PortfolioAnalysisOut,
     PortfolioStatusOut,
     PortfolioSummaryOut,
@@ -29,6 +30,7 @@ from catrix.db.session import session_scope
 from catrix.logging import get_logger
 from catrix.portfolio.enrich import claim_job, create_portfolio, run_portfolio_job
 from catrix.portfolio.export import export_rows, to_csv, to_json
+from catrix.portfolio.validation import CSV_CONTRACT
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
@@ -57,6 +59,8 @@ def _status(pf: Portfolio) -> PortfolioStatusOut:
         n_valid=pf.n_valid,
         n_invalid=pf.n_invalid,
         n_duplicates=pf.n_duplicates,
+        n_shared_location=pf.n_shared_location or 0,
+        n_locations=pf.n_locations or 0,
         validation_errors=pf.validation_errors or [],
         progress=progress,
         error=pf.error,
@@ -149,6 +153,14 @@ def base_summary(db: DB) -> PortfolioSummaryOut:
     )
 
 
+@router.get("/csv-contract", response_model=list[CsvColumnContractOut])
+def csv_contract() -> list[CsvColumnContractOut]:
+    """The upload contract the parser enforces: canonical columns, whether each is
+    required, and every accepted header alias. The frontend preview reads this so that
+    the two can never disagree."""
+    return [CsvColumnContractOut(**c) for c in CSV_CONTRACT]
+
+
 @router.get("/example.csv")
 def example_csv() -> Response:
     p = Path(get_settings().data_dir) / "samples" / "example_portfolio.csv"
@@ -224,6 +236,7 @@ def portfolio_analysis(portfolio_id: str, db: DB) -> PortfolioAnalysisOut:
         by_county=a["by_county"],
         concentration=a["concentration"],
         top_exposures=a["top_exposures"],
+        location_accumulation=a.get("location_accumulation", []),
         financial=a.get("financial"),
         warnings=a.get("warnings", []),
     )

@@ -45,7 +45,12 @@ def create_portfolio(
         n_valid=report.n_valid,
         n_invalid=report.n_invalid,
         n_duplicates=report.n_duplicates,
-        validation_errors=[*report.errors, *({"row": None, "error": w} for w in report.warnings)],
+        n_shared_location=report.n_shared_location,
+        n_locations=report.n_locations,
+        validation_errors=[
+            *report.errors,
+            *({"row": None, "error": w, "severity": "info"} for w in report.warnings),
+        ],
     )
     job = ProcessingJob(
         id=uuid.uuid4(),
@@ -68,16 +73,17 @@ def create_portfolio(
                 "address_text": r.address_text or None,
                 "lat": float(r.lat),
                 "lon": float(r.lon),
-                "property_value": None if pd.isna(r.property_value) else float(r.property_value),
-                "insured_value": None if pd.isna(r.insured_value) else float(r.insured_value),
+                "property_value": _num(r.property_value),
+                "contents_value": _num(r.contents_value),
+                "insured_value": _num(r.insured_value),
+                "policy_limit": _num(r.limit),
+                "deductible": _num(r.deductible),
                 "is_duplicate_of": None
                 if r.is_duplicate_of is None or pd.isna(r.is_duplicate_of)
                 else int(r.is_duplicate_of),
-                "financial": {
-                    "deductible": None
-                    if r.deductible is None or pd.isna(r.deductible)
-                    else float(r.deductible)
-                },
+                "duplicate_kind": r.duplicate_kind if isinstance(r.duplicate_kind, str) else None,
+                "location_key": r.location_key if isinstance(r.location_key, str) else None,
+                "financial": None,
                 "geom": f"SRID=4326;POINT({float(r.lon)} {float(r.lat)})",
             }
             for r in rows(valid)
@@ -85,6 +91,10 @@ def create_portfolio(
     )
     session.flush()
     return pf, job
+
+
+def _num(v: Any) -> float | None:
+    return None if v is None or pd.isna(v) else float(v)
 
 
 def claim_job(session: Session, job_id: uuid.UUID) -> bool:
@@ -140,12 +150,18 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
             pd.DataFrame(
                 columns=[
                     "property_id",
+                    "policy_id",
                     "lat",
                     "lon",
                     "county_fips",
                     "insured_value",
                     "property_value",
+                    "contents_value",
+                    "policy_limit",
+                    "deductible",
                     "is_duplicate_of",
+                    "duplicate_kind",
+                    "location_key",
                     "composite_score",
                     "hazards",
                     "financial",
@@ -159,12 +175,23 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
             {
                 "pk": p.id,
                 "property_id": p.property_id,
+                "policy_id": p.policy_id,
                 "lat": p.lat,
                 "lon": p.lon,
                 "insured_value": p.insured_value,
                 "property_value": p.property_value,
+                "contents_value": p.contents_value,
+                "policy_limit": p.policy_limit,
+                # rows created before migration 0006 kept the deductible in the JSON
+                "deductible": (
+                    p.deductible
+                    if p.deductible is not None
+                    else (p.financial or {}).get("deductible")
+                ),
                 "is_duplicate_of": p.is_duplicate_of,
-                "deductible": (p.financial or {}).get("deductible"),
+                "duplicate_kind": p.duplicate_kind
+                or ("shared_location" if p.is_duplicate_of is not None else None),
+                "location_key": p.location_key,
             }
             for p in props
         ]
@@ -227,11 +254,11 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
             fin = compute_scenarios(
                 per,
                 building=building,
-                insured_value=row["insured_value"] if pd.notna(row["insured_value"]) else None,
-                property_value=row["property_value"] if pd.notna(row["property_value"]) else None,
-                deductible=row["deductible"]
-                if row["deductible"] is not None and pd.notna(row["deductible"])
-                else None,
+                insured_value=_num(row["insured_value"]),
+                property_value=_num(row["property_value"]),
+                contents_value=_num(row["contents_value"]),
+                deductible=_num(row["deductible"]),
+                limit=_num(row["policy_limit"]),
             )
             hazards_col.append({hid: r.to_dict() for hid, r in per.items()})
             scores.append(comp.score)

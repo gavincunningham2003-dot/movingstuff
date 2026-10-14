@@ -404,7 +404,9 @@ class Portfolio(Base):
     n_rows: Mapped[int] = mapped_column(Integer, default=0)
     n_valid: Mapped[int] = mapped_column(Integer, default=0)
     n_invalid: Mapped[int] = mapped_column(Integer, default=0)
-    n_duplicates: Mapped[int] = mapped_column(Integer, default=0)
+    n_duplicates: Mapped[int] = mapped_column(Integer, default=0)  # exact duplicates
+    n_shared_location: Mapped[int] = mapped_column(Integer, default=0)
+    n_locations: Mapped[int] = mapped_column(Integer, default=0)
     validation_errors: Mapped[list[Any] | None] = mapped_column(JSON)
     analysis: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     error: Mapped[str | None] = mapped_column(Text)
@@ -424,10 +426,15 @@ class PortfolioProperty(Base):
     address_text: Mapped[str | None] = mapped_column(String(512))
     lat: Mapped[float] = mapped_column(Float)
     lon: Mapped[float] = mapped_column(Float)
-    property_value: Mapped[float | None] = mapped_column(Float)
-    insured_value: Mapped[float | None] = mapped_column(Float)
+    property_value: Mapped[float | None] = mapped_column(Float)  # building replacement value
+    contents_value: Mapped[float | None] = mapped_column(Float)
+    insured_value: Mapped[float | None] = mapped_column(Float)  # sum insured / TIV
+    policy_limit: Mapped[float | None] = mapped_column(Float)
+    deductible: Mapped[float | None] = mapped_column(Float)
     county_fips: Mapped[str | None] = mapped_column(String(5), index=True)
     is_duplicate_of: Mapped[int | None] = mapped_column(Integer)
+    duplicate_kind: Mapped[str | None] = mapped_column(String(24))  # exact|shared_location|repeated_id
+    location_key: Mapped[str | None] = mapped_column(String(64), index=True)
     hazards: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     composite_score: Mapped[float | None] = mapped_column(Float)
     financial: Mapped[dict[str, Any] | None] = mapped_column(JSON)

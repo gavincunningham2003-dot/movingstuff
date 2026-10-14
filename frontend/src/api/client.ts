@@ -1,4 +1,5 @@
 import type {
+  CsvColumnContractOut,
   CountyCountOut,
   DataQualityOut,
   DataSourceOut,
@@ -150,6 +151,8 @@ export const api = {
   propertyCounties: (signal?: AbortSignal) => get<CountyCountOut[]>('/properties/counties', undefined, signal),
 
   portfolios: (signal?: AbortSignal) => get<PortfolioStatusOut[]>('/portfolio', undefined, signal),
+
+  csvContract: (signal?: AbortSignal) => get<CsvColumnContractOut[]>('/portfolio/csv-contract', undefined, signal),
 
   portfolioStatus: (id: string, signal?: AbortSignal) =>
     get<PortfolioStatusOut>(`/portfolio/${encodeURIComponent(id)}`, undefined, signal),

@@ -17,6 +17,7 @@ export const queryKeys = {
     ['properties', 'geojson', bbox, county, limit] as const,
   propertyCounties: ['properties', 'counties'] as const,
   portfolios: ['portfolio', 'list'] as const,
+  csvContract: ['portfolio', 'csv-contract'] as const,
   portfolioStatus: (id: string) => ['portfolio', 'status', id] as const,
   portfolioAnalysis: (id: string) => ['portfolio', 'analysis', id] as const,
   dataSources: ['data-sources'] as const,
@@ -108,6 +109,14 @@ export function usePropertyCounties() {
     queryKey: queryKeys.propertyCounties,
     queryFn: ({ signal }) => api.propertyCounties(signal),
     staleTime: 10 * 60_000,
+  });
+}
+
+export function useCsvContract() {
+  return useQuery({
+    queryKey: queryKeys.csvContract,
+    queryFn: ({ signal }) => api.csvContract(signal),
+    staleTime: Infinity,
   });
 }
 

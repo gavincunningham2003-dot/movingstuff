@@ -252,7 +252,13 @@ def test_portfolio_upload_roundtrip(seeded, monkeypatch):
 
     get_settings.cache_clear()
     client = TestClient(create_app())
-    csv = b"property_id,latitude,longitude,insured_value,deductible\nA,37.87,-122.27,1000000,5000\nB,37.80,-122.25,500000,\nB2,37.80,-122.25,500000,\n"
+    csv = (
+        b"property_id,latitude,longitude,property_value,insured_value,deductible\n"
+        b"A,37.87,-122.27,1000000,1000000,5000\n"
+        b"B,37.80,-122.25,,500000,\n"
+        b"B,37.80,-122.25,,500000,\n"  # exact duplicate: excluded
+        b"B2,37.80,-122.25,,500000,\n"  # second policy at the same site: kept
+    )
     up = client.post(
         "/api/v1/portfolio/upload",
         files={"file": ("p.csv", csv, "text/csv")},
@@ -265,9 +271,14 @@ def test_portfolio_upload_roundtrip(seeded, monkeypatch):
     run_portfolio_job(seeded, uuid.UUID(jid), allow_network=False)
     st = client.get(f"/api/v1/portfolio/{pid}").json()
     assert st["status"] == "completed" and st["n_duplicates"] == 1
+    assert st["n_shared_location"] == 1 and st["n_locations"] == 2
     an = client.get(f"/api/v1/portfolio/{pid}/analysis").json()
-    assert an["summary"]["n_properties"] == 2 and an["summary"]["n_fhsz_very_high"] == 1
-    assert an["financial"]["total_insured_value"] == 1_500_000
+    assert an["summary"]["n_properties"] == 3 and an["summary"]["n_fhsz_very_high"] == 1
+    assert an["financial"]["total_insured_value"] == 2_000_000
+    assert an["financial"]["total_replacement_value"] == 1_000_000
+    assert an["location_accumulation"][0]["n_exposures"] == 2
+    contract = client.get("/api/v1/portfolio/csv-contract").json()
+    assert any(c["name"] == "limit" and not c["required"] for c in contract)
     wf = next(
         s
         for s in an["financial"]["scenarios"]

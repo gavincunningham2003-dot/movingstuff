@@ -464,6 +464,67 @@ Checks: `ruff check` / `ruff format --check` clean; `mypy catrix` clean (79 file
 `pytest tests/unit -q` **85 passed** (233.9 s, GPU) after Stage A alone; frontend `tsc`
 clean.
 
+### Stage B — insurance financial logic and duplicate exposure handling (2026-10-14)
+
+Scope: items 5-7 of the improvement prompt.
+
+**CSV contract (`portfolio/validation.py`, served at `GET /portfolio/csv-contract`).**
+Only latitude and longitude are required; `property_id` is generated as `row-<n>` when the
+column or a cell is missing (counted and reported). Money columns are distinct and no longer
+aliased onto each other: `property_value` (building replacement value), `contents_value`,
+`insured_value` (sum insured / TIV), `limit` (policy limit) and `deductible`. Headers are
+normalised the same way on both sides ("Policy Limit", "policy-limit" and "POLICY_LIMIT"
+all match). An empty amount is "not supplied"; a malformed one (`n/a`, text) is a
+*field-level warning* carrying row, field and the offending value, the row is kept for
+hazard assessment with the value treated as missing; a negative amount is a row-level
+error. The frontend column-mapping panel reads the contract from the API (static fallback
+mirrors it) and the validation list shows severity, row and field.
+
+**Duplicate kinds.** Rows are classified instead of silently dropped: `exact` (same
+property_id at the same location within 5 m — excluded from counts and totals),
+`shared_location` (different property_id at the same site — kept and surfaced as location
+accumulation), `repeated_id` (same id elsewhere — kept and flagged). `location_key` and
+`duplicate_kind` are stored per row; portfolio status reports exact duplicates, shared
+locations and distinct locations separately, and the dashboard tiles say which is which.
+Previously every location duplicate was excluded from TIV, which hid exactly the
+accumulation an underwriter wants to see.
+
+**Financial logic (`finance/scenarios.py`, assumptions version `fs-2.1`).** Gross loss is
+physical damage to the *replacement* value (building + contents); the sum insured is a
+policy quantity used only as a proxy when no replacement value is known
+(`exposed_value_basis`: replacement_value | sum_insured_proxy | nsi_structure | missing).
+Net insured loss applies the deductible and the limit, where the limit defaults to the sum
+insured when no explicit limit is given (`limit_basis`: policy_limit | sum_insured | none) —
+earlier code never applied a limit in portfolio runs. Every scenario carries a damage-ratio
+sensitivity (×0.5, ×1.0, ×1.5, ratio capped at 1) for gross and net.
+
+**Portfolio totals (`portfolio/analytics.py`).** Sum insured, building value, contents value,
+replacement value, policy limits and deductibles are totalled separately with the number of
+exposures contributing to each; scenario totals report gross, net, the number of exposures
+with and without terms, and sensitivity totals; `location_accumulation` lists sites with
+more than one exposure (ids, policies, sum insured, replacement value, share of TIV). The
+export CSV gains `duplicate_kind`, `location_key`, `contents_value`, `policy_limit`,
+`deductible` and `exposed_value_basis`.
+
+**Migration `0006_portfolio_exposure_fields`** adds the columns above (deductible moves out of
+the `financial` JSON; old rows are back-filled and old location duplicates are relabelled
+`shared_location`). Applied to the development database.
+
+**Verification (real run, 2026-10-14 22:35).** Uploaded the regenerated 25-row example CSV
+(now with contents, limits, an exact duplicate, a second policy at one site, a malformed
+amount and an id-less row) through the restarted API: 24 valid, 1 invalid, 1 exact
+duplicate excluded, 1 shared location, 22 distinct locations; totals: sum insured
+$17.63 M over 22 exposures, replacement value $26.14 M (building $22.54 M + contents
+$3.60 M), limits $14.12 M explicit for 16 exposures with 6 falling back to the sum insured
+and 1 with no cap; the Berkeley site shows two policies (POL-B, POL-K) with $2.1 M sum
+insured, 11.9 % of TIV. Scenario totals report net below gross with the number of exposures
+that had terms. The frontend financial card, accumulation table and severity-tagged
+validation list render these values.
+
+Checks: `ruff`, `mypy catrix` (79 files) clean; `pytest tests/unit -q` **92 passed**
+(162 s); frontend `npm run build` succeeds. The integration test
+`test_portfolio_upload_roundtrip` was updated for the new counts (exact duplicate excluded,
+shared location kept) and is run in Stage E with the PostGIS test database.
 
 ## Completed functionality (code)
 
@@ -477,10 +538,12 @@ clean.
   confidence and caveats; batch assessment with PostGIS VALUES-list lookups.
 - Composite screening index with family-level correlation handling, missing-hazard
   reporting and assumption labelling.
-- Financial scenario module (gross/net, assumption kinds, no EAL).
-- Portfolio: CSV validation with column aliases, duplicate detection, background
-  enrichment job, aggregation (county, 10 km concentration cells, top exposures,
-  scenario totals), CSV/JSON export.
+- Financial scenario module (gross on replacement value, net with deductible and limit
+  defaulting to the sum insured, damage-ratio sensitivity, assumption kinds, no EAL).
+- Portfolio: served CSV contract, optional ids, distinct money columns, malformed-vs-empty
+  amounts, classified duplicates (exact / shared location / repeated id), background
+  enrichment job, aggregation (county, 10 km concentration cells, location accumulation,
+  top exposures, separate money totals, scenario totals with sensitivity), CSV/JSON export.
 - ML: location-year dataset (DuckDB), leakage checks, chronological + spatial-block
   splits, baseline/LR/RF/XGBoost, chronological forward-chaining CV with a gap for tuning
   and selection, OOF calibration (none/isotonic/sigmoid by validation Brier), feature
@@ -506,8 +569,9 @@ Unit tests run without network (respx mocks) or database. Integration tests requ
 | 2026-10-13 | `pytest tests/integration -m integration` | not run (no database) |
 | 2026-10-13 | `mypy catrix` | not run |
 | 2026-10-14 | `pytest tests/unit -q` after Stage A (chronological CV, artefacts, feature policy) | **85 passed** (233.9 s, GPU) |
-| 2026-10-14 | `mypy catrix` (Stage A) | clean, 79 files |
-| 2026-10-14 | `npm run build` (Stage A) | succeeds |
+| 2026-10-14 | `pytest tests/unit -q` after Stage B (CSV contract, duplicate kinds, finance) | **92 passed** (162.2 s) |
+| 2026-10-14 | `mypy catrix` (Stage A and B) | clean, 79 files |
+| 2026-10-14 | `npm run build` (Stage A and B) | succeeds |
 
 First run surfaced four failures, all fixed: a numpy `.astype("Int64")` call in the
 building matcher (code bug), and three test-data issues (synthetic ML table violated the

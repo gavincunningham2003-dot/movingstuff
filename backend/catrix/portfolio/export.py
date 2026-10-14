@@ -47,9 +47,17 @@ def export_rows(session: Session, pf: Portfolio) -> list[dict[str, Any]]:
             "latitude": p.lat,
             "longitude": p.lon,
             "county_fips": p.county_fips,
+            "duplicate_kind": p.duplicate_kind,
             "is_duplicate_of_row": p.is_duplicate_of,
+            "location_key": p.location_key,
             "property_value": p.property_value,
+            "contents_value": p.contents_value,
             "insured_value": p.insured_value,
+            "policy_limit": p.policy_limit,
+            "deductible": (
+                p.deductible if p.deductible is not None else (p.financial or {}).get("deductible")
+            ),
+            "exposed_value_basis": (p.financial or {}).get("exposed_value_basis"),
             "composite_screening_index": p.composite_score,
             "composite_label": ((p.financial or {}).get("composite") or {}).get("label"),
         }

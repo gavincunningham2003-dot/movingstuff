@@ -1,4 +1,11 @@
-from catrix.finance.scenarios import apply_policy_terms, compute_scenarios, resolve_exposed_value
+from catrix.finance.scenarios import (
+    SENSITIVITY_MULTIPLIERS,
+    apply_policy_terms,
+    compute_scenarios,
+    exposed_value_basis,
+    resolve_exposed_value,
+    resolve_limit,
+)
 from catrix.hazards.base import HazardResult
 from catrix.scoring.composite import FAMILY_WEIGHTS, compute_composite
 
@@ -52,10 +59,56 @@ def test_policy_terms():
     assert apply_policy_terms(5.0, 10.0, 50.0) == 0.0
 
 
-def test_exposed_value_precedence():
-    assert resolve_exposed_value(500.0, 900.0)[0:2] == (500.0, "observed")
-    assert resolve_exposed_value(None, 900.0)[0:2] == (900.0, "observed")
+def test_exposed_value_precedence_prefers_replacement_values_over_sum_insured():
+    # replacement value (building + contents) is the physical value at risk
+    assert resolve_exposed_value(500.0, 900.0)[0:2] == (900.0, "observed")
+    assert resolve_exposed_value(500.0, 900.0, contents_value=100.0)[0] == 1000.0
+    assert exposed_value_basis(500.0, 900.0) == "replacement_value"
+    # the sum insured is only a proxy when no replacement value is known
+    assert resolve_exposed_value(500.0, None)[0:2] == (500.0, "observed")
+    assert exposed_value_basis(500.0, None) == "sum_insured_proxy"
+    assert exposed_value_basis(None, None, 250.0) == "nsi_structure"
     assert resolve_exposed_value(None, None)[1] == "missing"
+
+
+def test_limit_defaults_to_sum_insured():
+    assert resolve_limit(300.0, 500.0) == (300.0, "policy_limit")
+    assert resolve_limit(None, 500.0) == (500.0, "sum_insured")
+    assert resolve_limit(None, None) == (None, "none")
+
+
+def test_net_loss_is_capped_by_sum_insured_and_gross_uses_replacement_value():
+    res = {"wildfire_fhsz": _r("wildfire_fhsz", value=3.0, cls="Very High")}
+    out = compute_scenarios(res, property_value=1_000_000, insured_value=600_000, deductible=10_000)
+    wf = out["scenarios"][0]
+    assert out["exposed_value"] == 1_000_000 and out["exposed_value_basis"] == "replacement_value"
+    assert out["limit"] == 600_000 and out["limit_basis"] == "sum_insured"
+    assert wf["gross_loss"] == 800_000 and wf["net_insured_loss"] == 600_000
+    assert any(
+        a["name"] == "limit" and "sum insured" in (a["source"] or "") for a in wf["assumptions"]
+    )
+    # an explicit policy limit wins over the sum insured
+    out2 = compute_scenarios(res, property_value=1_000_000, insured_value=600_000, limit=400_000)
+    assert out2["limit_basis"] == "policy_limit"
+    assert out2["scenarios"][0]["net_insured_loss"] == 400_000
+    # contents are added to the building value, never the sum insured
+    out3 = compute_scenarios(
+        res, property_value=1_000_000, contents_value=200_000, insured_value=5_000_000
+    )
+    assert out3["exposed_value"] == 1_200_000 and out3["building_value"] == 1_000_000
+    assert out3["contents_value"] == 200_000 and out3["sum_insured"] == 5_000_000
+
+
+def test_sensitivity_rows_scale_the_damage_ratio_and_cap_at_one():
+    res = {"wildfire_fhsz": _r("wildfire_fhsz", value=3.0, cls="Very High")}
+    out = compute_scenarios(res, property_value=100.0, insured_value=70.0, deductible=5.0)
+    wf = out["scenarios"][0]
+    assert out["sensitivity_multipliers"] == list(SENSITIVITY_MULTIPLIERS)
+    sens = {s["multiplier"]: s for s in wf["sensitivity"]}
+    assert sens[1.0]["gross_loss"] == wf["gross_loss"]
+    assert sens[0.5]["gross_loss"] == 40.0 and sens[0.5]["net_insured_loss"] == 35.0
+    assert sens[1.5]["damage_ratio"] == 1.0 and sens[1.5]["gross_loss"] == 100.0
+    assert sens[1.5]["net_insured_loss"] == 70.0  # capped by the sum insured
 
 
 def test_scenarios_apply_only_where_hazard_triggers_and_terms_given():
