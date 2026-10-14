@@ -380,6 +380,25 @@ Still open from the review (improvements): duplicate exposure handling (#13), AP
 authentication/rate limiting for public deployment (#14), fully reproducible experiment
 scripts and committed final metrics (#16); documentation (#15) is updated in this branch.
 
+### Results after the corrections (2026-10-14)
+
+Both datasets were rebuilt with the no-backfill rule and both scenarios retrained under
+the corrected protocol (CV tuning in the training years, calibration and thresholds on
+validation, selection by validation PR-AUC, lag columns excluded). Optional feature
+coverage is now honest: fuels 28 % of location-years (LF2016 onward only), land cover 79 %
+(NLCD 2001 onward), climate 100 %, drought 83 %.
+
+| Run | Target | Selected (by validation PR-AUC) | Test ROC / PR-AUC | Spatial ROC / PR-AUC | Riskiest 10 % review budget (test) |
+|---|---|---|---|---|---|
+| `wf-fix-202610142028` (live) | inside perimeter | logistic regression (val PR 0.0101; RF 0.0087, XGB 0.0081) | 0.894 / 0.0059 | 0.729 / 0.0075 | 45 of 80 positives, lift 5.6x, recall 95 % CI 45-67 % |
+| `wf-fix-1km-202610142050` (recorded) | within 1 km | logistic regression (val PR 0.0396) | 0.805 / 0.0274 | 0.718 / 0.0396 | 201 of 620, lift 3.2x |
+
+For comparison, XGBoost in the live run scores 0.911 / 0.844 ROC-AUC on test / spatial,
+but it is not selected because the test years no longer influence the choice; the
+earlier runs (0.935-0.948 test ROC-AUC) benefited from selecting on test and from future
+vegetation maps. These are the numbers to quote. Predictions for all 14,994 addresses
+were regenerated from the live run.
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.
