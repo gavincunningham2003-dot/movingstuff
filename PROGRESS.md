@@ -371,6 +371,11 @@ against the code and implemented, the 4 improvements are tracked below.
 | 12 | 93 mypy errors (CI red) | 0 errors without disabling checks: `rows()` typed helper for itertuples, Literal casts for DB strings, structlog `Processor` annotations, narrowed Optionals |
 
 Also: `/docs` link fixed to `/api/docs`; `.env.example` documents the new settings.
+
+Verification on this branch: ruff clean, mypy 0 errors (77 files), 79 unit tests and 4/4
+PostGIS integration tests pass, the frontend production build passes, and
+`docker compose build api` succeeds (4.4 GB image); a container started with the compose
+mounts loads the 29-source registry and imports the API (27 routes).
 Still open from the review (improvements): duplicate exposure handling (#13), API
 authentication/rate limiting for public deployment (#14), fully reproducible experiment
 scripts and committed final metrics (#16); documentation (#15) is updated in this branch.
