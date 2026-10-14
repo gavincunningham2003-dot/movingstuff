@@ -11,11 +11,12 @@ import logging
 import sys
 
 import structlog
+from structlog.typing import Processor
 
 
 def configure_logging(level: str = "INFO", json: bool = False) -> None:
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level.upper())
-    shared = [
+    shared: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
@@ -23,11 +24,11 @@ def configure_logging(level: str = "INFO", json: bool = False) -> None:
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]
-    renderer = (
-        structlog.processors.JSONRenderer()
-        if json
-        else structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty())
-    )
+    renderer: Processor
+    if json:
+        renderer = structlog.processors.JSONRenderer()
+    else:
+        renderer = structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty())
     structlog.configure(
         processors=[*shared, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(level.upper())),

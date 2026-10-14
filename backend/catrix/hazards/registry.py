@@ -27,6 +27,7 @@ from catrix.hazards.secondary import (
     TsunamiModule,
 )
 from catrix.hazards.wildfire import WildfireFHSZModule, WildfirePerimeterHistoryModule
+from catrix.ingest.registry import ensure_sources
 from catrix.logging import get_logger
 
 log = get_logger(__name__)
@@ -194,6 +195,7 @@ def assess_all_addresses(
                     }
                 )
                 counts[hid] += 1
+        ensure_sources(session, {str(r["source_id"]) for r in inserts})
         session.bulk_insert_mappings(PropertyHazardAssessment, inserts)
         session.commit()
         log.info(

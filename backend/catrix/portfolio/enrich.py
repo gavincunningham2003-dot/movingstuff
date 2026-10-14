@@ -19,6 +19,7 @@ from catrix.geo.spatial import point_in_polygon_join, points_gdf
 from catrix.hazards.base import HazardResult
 from catrix.hazards.lookup import nearest_structure
 from catrix.hazards.registry import assess_points, build_modules
+from catrix.ingest.store import rows
 from catrix.logging import get_logger
 from catrix.ml.predict import predict_for_points
 from catrix.portfolio.analytics import summarise_portfolio
@@ -54,6 +55,7 @@ def create_portfolio(
     )
     pf.job_id = job.id
     session.add_all([pf, job])
+    session.flush()  # bulk_insert_mappings does not autoflush: parents must exist first
     valid = df[df["valid"]]
     session.bulk_insert_mappings(
         PortfolioProperty,
@@ -78,16 +80,33 @@ def create_portfolio(
                 },
                 "geom": f"SRID=4326;POINT({float(r.lon)} {float(r.lat)})",
             }
-            for r in valid.itertuples()
+            for r in rows(valid)
         ],
     )
     session.flush()
     return pf, job
 
 
+def claim_job(session: Session, job_id: uuid.UUID) -> bool:
+    """Move one specific job from 'pending' to 'claimed' atomically; False if another
+    runner got there first (or the job is not pending)."""
+    from sqlalchemy import text
+
+    row = session.execute(
+        text(
+            "UPDATE processing_jobs SET status = 'claimed' "
+            "WHERE id = :id AND status = 'pending' RETURNING id"
+        ),
+        {"id": job_id},
+    ).first()
+    session.commit()
+    return row is not None
+
+
 def run_portfolio_job(session: Session, job_id: uuid.UUID, *, allow_network: bool = True) -> None:
     job = session.get(ProcessingJob, job_id)
     assert job is not None
+    assert job.params is not None
     pf = session.get(Portfolio, uuid.UUID(job.params["portfolio_id"]))
     assert pf is not None
     job.status = pf.status = "running"
@@ -171,19 +190,20 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
         structures = nearest_structure(session, chunk[["lon", "lat"]])
         for j in range(len(chunk)):
             per: dict[str, HazardResult] = {hid: lst[j] for hid, lst in res.items()}
-            if preds and preds[j] is not None and preds[j].get("probability") is not None:
+            pj = preds[j] if preds else None
+            if pj is not None and pj.get("probability") is not None:
                 per["wildfire_ml"] = HazardResult(
                     "wildfire_ml",
                     "Wildfire – ML perimeter exposure (next year)",
-                    preds[j]["model_version"],
+                    pj["model_version"],
                     "covered",
-                    value=preds[j]["probability"],
+                    value=pj["probability"],
                     units="probability",
                     probability_horizon="next calendar year",
                     method="ml_model",
                     confidence="medium",
-                    details={"threshold": preds[j].get("threshold")},
-                    caveats=preds[j].get("caveats", []),
+                    details={"threshold": pj.get("threshold")},
+                    caveats=pj.get("caveats", []),
                 )
             comp = compute_composite(per)
             row = chunk.iloc[j]
@@ -218,8 +238,10 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
             fin_col.append({**fin, "composite": comp.to_dict()})
         job.progress = min(0.9, (start + len(chunk)) / len(df))
         session.commit()
-    df["hazards"], df["composite_score"], df["financial"] = hazards_col, scores, fin_col
-    for p, r in zip(props, df.itertuples(), strict=True):
+    df["hazards"] = pd.Series(hazards_col, index=df.index, dtype=object)
+    df["composite_score"] = pd.Series(scores, index=df.index, dtype=float)
+    df["financial"] = pd.Series(fin_col, index=df.index, dtype=object)
+    for p, r in zip(props, rows(df), strict=True):
         p.county_fips = r.county_fips if isinstance(r.county_fips, str) else None
         p.hazards = r.hazards
         p.composite_score = r.composite_score

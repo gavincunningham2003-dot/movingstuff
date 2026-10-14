@@ -59,6 +59,17 @@ def choose_threshold(y_val: np.ndarray, p_val: np.ndarray) -> float:
 SWEEP_SHARES = (0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5)
 
 
+def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95 % Wilson score interval for a proportion k/n (None when n == 0)."""
+    if n <= 0:
+        return None
+    ph = k / n
+    denom = 1 + z * z / n
+    centre = (ph + z * z / (2 * n)) / denom
+    half = z * ((ph * (1 - ph) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
 def confusion_at(y: np.ndarray, p: np.ndarray, threshold: float) -> dict[str, Any]:
     """Counts and rates at one threshold (flagged = p >= threshold)."""
     y = np.asarray(y).astype(int)
@@ -77,6 +88,10 @@ def confusion_at(y: np.ndarray, p: np.ndarray, threshold: float) -> dict[str, An
         "recall": float(tp / (tp + fn)) if tp + fn else None,
         "specificity": float(tn / (tn + fp)) if tn + fp else None,
         "lift": float((tp / (tp + fp)) / (y.mean() or 1e-12)) if tp + fp and y.mean() else None,
+        "recall_ci95": wilson_interval(int(tp), int(tp + fn)),
+        "n_positives": int(tp + fn),
+        # A probability threshold fixed on the validation years and applied unchanged.
+        "kind": "fixed_threshold",
     }
 
 
@@ -111,6 +126,11 @@ def confusion_top_share(
         "recall": float(tp / (tp + fn)) if tp + fn else None,
         "specificity": float(tn / (tn + fp)) if tn + fp else None,
         "lift": float((tp / (tp + fp)) / prev) if tp + fp and prev else None,
+        "recall_ci95": wilson_interval(tp, tp + fn),
+        "n_positives": int(tp + fn),
+        # A review budget: the top ``share`` of THIS evaluation sample by model rank.
+        # It is not a transferable probability threshold.
+        "kind": "ranking_budget",
     }
 
 
@@ -153,13 +173,13 @@ SHARE_POINTS = (("top_1pct", 0.01), ("top_5pct", 0.05), ("top_10pct", 0.10))
 
 
 OPERATING_POINT_LABELS = {
-    "f1_validation": "F1-optimal on validation",
-    "recall_25": "Recall >= 25 % on validation",
-    "recall_50": "Recall >= 50 % on validation",
-    "recall_75": "Recall >= 75 % on validation",
-    "top_1pct": "Flag the riskiest 1 %",
-    "top_5pct": "Flag the riskiest 5 %",
-    "top_10pct": "Flag the riskiest 10 %",
+    "f1_validation": "Fixed threshold: F1-optimal on validation",
+    "recall_25": "Fixed threshold: recall >= 25 % on validation",
+    "recall_50": "Fixed threshold: recall >= 50 % on validation",
+    "recall_75": "Fixed threshold: recall >= 75 % on validation",
+    "top_1pct": "Review budget: riskiest 1 % of this sample",
+    "top_5pct": "Review budget: riskiest 5 % of this sample",
+    "top_10pct": "Review budget: riskiest 10 % of this sample",
 }
 
 

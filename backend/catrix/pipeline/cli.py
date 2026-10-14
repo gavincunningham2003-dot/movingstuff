@@ -44,7 +44,7 @@ def _init() -> None:
     s.ensure_dirs()
 
 
-def _run_connector(connector, **kwargs) -> None:  # type: ignore[no-untyped-def]
+def _run_connector(connector, **kwargs) -> None:
     from catrix.db.session import session_scope
     from catrix.ingest.registry import sync_registry
 

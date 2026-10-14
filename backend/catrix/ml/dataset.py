@@ -304,4 +304,9 @@ def leakage_checks(df: pd.DataFrame) -> list[str]:
     for c in ("wildfire_fhsz", "fhsz", "FHSZ"):
         if c in df.columns:
             problems.append(f"present-day classification column {c} must not be a feature")
+    # Periodic sources must never be matched to an edition newer than the feature year:
+    # a negative lag would mean a post-T map (which can encode the label) was used.
+    for lag_col in ("fuel_version_lag_years", "lc_version_lag_years"):
+        if lag_col in df.columns and (df[lag_col].dropna() < 0).any():
+            problems.append(f"{lag_col} is negative for some rows (edition newer than T)")
     return problems

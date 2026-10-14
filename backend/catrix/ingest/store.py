@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import geopandas as gpd
 import pandas as pd
@@ -18,6 +18,13 @@ from catrix.logging import get_logger
 
 log = get_logger(__name__)
 T = TypeVar("T")
+
+
+def rows(df: pd.DataFrame) -> Iterator[Any]:
+    """``df.itertuples()`` with ``Any``-typed fields. pandas-stubs types every namedtuple
+    field as the union of all possible column dtypes, which turns ``float(r.lon)`` into a
+    type error; the fields are read from frames whose columns the caller just built."""
+    return cast(Iterator[Any], iter(df.itertuples()))
 
 
 def chunked(items: Iterable[T], size: int) -> Iterator[list[T]]:

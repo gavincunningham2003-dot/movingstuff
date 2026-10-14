@@ -19,6 +19,7 @@ from catrix.hazards.point_cache import PointCache
 from catrix.ingest.arcgis import imageserver_sample, imageserver_sample_batch
 from catrix.ingest.http import SourceUnavailableError, get_json
 from catrix.ingest.registry import load_registry
+from catrix.ingest.store import rows
 from catrix.logging import get_logger
 
 log = get_logger(__name__)
@@ -71,7 +72,7 @@ class EarthquakePGAModule(HazardModule):
         so the per-point loop below only ever hits the cache for the CGS raster."""
         missing = [
             (float(r.lon), float(r.lat))
-            for r in points.itertuples()
+            for r in rows(points)
             if cache.get(float(r.lon), float(r.lat)) is None
         ]
         if not missing:
@@ -105,7 +106,7 @@ class EarthquakePGAModule(HazardModule):
         self._prefetch_cgs(cgs_cache, points)
         out = []
         cgs_failures = 0
-        for r in points.itertuples():
+        for r in rows(points):
             lon, lat = float(r.lon), float(r.lat)
             val: float | None = None
             src = self.cgs_source

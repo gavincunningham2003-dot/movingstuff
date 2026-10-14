@@ -47,9 +47,20 @@ memorisation), any climate observation for year T+1.
 - **Spatial block holdout**: 15 % of 50 km EPSG:3310 grid blocks are removed from train
   and validation entirely and reported as `spatial_test`.
 - **Geographic breakdown**: test metrics by county (n ≥ 200).
-- Hyper-parameters (small grid) and the decision threshold (max F1) are chosen on the
-  validation years only; isotonic calibration is fitted on validation; the test years are
-  untouched until the final evaluation.
+- **Hyper-parameters** (small grid per family) are chosen by grouped 3-fold
+  cross-validation *inside the training years* (folds are blocks of feature years), so no
+  later data touches tuning.
+- **Calibration and thresholds** use the validation years: isotonic regression is fitted
+  there, and every named operating point (F1-optimal, recall targets) is a probability
+  threshold read off the validation years and applied unchanged to the held-out splits.
+- **Model choice** is by validation PR-AUC. The test years and the spatial holdout are
+  reported only; changing their labels cannot change which model is selected.
+- **No future editions.** Periodic sources (LANDFIRE fuels, NLCD land cover) are matched
+  to the latest edition with data year ≤ T. Years before the first available edition get
+  missing values, never a later map: a vegetation map collected after year T reflects the
+  fires that happened in between and would encode the label. `leakage_checks()` rejects any
+  negative edition lag. The `*_version_lag_years` columns are therefore ≥ 0 and are
+  excluded from the live model (`--no-lag-features`) because they still track the calendar.
 
 ## Models
 
@@ -61,8 +72,32 @@ memorisation), any climate observation for year T+1.
 Rare positives are handled with class weights only — no SMOTE, because location-years
 are spatially and temporally dependent and synthetic neighbours would leak.
 
-Selection: highest test PR-AUC among learned models, reported *only if* it beats the
-baseline; otherwise the baseline is marked selected and the dashboard says so.
+Selection: highest **validation** PR-AUC among learned models, reported *only if* it beats
+the baseline on validation; otherwise the baseline is marked selected and the dashboard
+says so.
+
+## Operating points
+
+The dashboard distinguishes two kinds of operating point and labels them as such:
+
+- **Fixed thresholds**: probability cuts chosen on the validation years (F1-optimal,
+  recall ≥ 25/50/75 %) and applied unchanged to the test years and the spatial holdout.
+- **Review budgets**: "the riskiest N % of *this* evaluation sample" by model rank. These
+  answer the screening question ("if we can inspect 5 % of locations, how many next-year
+  exposures do we catch?") but are not transferable thresholds. Ranking uses the raw
+  model score because isotonic calibration ties probabilities into steps.
+
+Every point reports counts, precision, recall with a 95 % Wilson interval, specificity,
+flagged share and lift over prevalence; a flagged-share sweep (0.1 %–50 %) backs the slider.
+
+## Prediction-time features for new locations
+
+Uploaded portfolio rows and map clicks are never matched to an ingested address by
+DataFrame index. Only an explicit `address_id` column reuses the per-address tables;
+every other point is sampled from its own coordinates: PRISM annual grids and 1991-2020
+normals, the latest LANDFIRE edition ≤ T, the NLCD epoch ≤ T (tiles fetched on demand),
+the county drought table, the 3DEP terrain tiles and a PostGIS footprint count within
+100 m. Anything unavailable is a null feature, reported as such.
 
 ## Metrics reported
 
@@ -87,5 +122,8 @@ normalisation is a screening assumption documented in `scoring/composite.py`.
 
 ## Results
 
-No training run has been performed yet; see `PROGRESS.md`. When one is, this section will
-be filled from `metrics.json` (never by hand).
+Live and recorded runs are listed by `GET /api/v1/models/versions` and every number on
+the Model Analytics page is read from the run's `metrics.json` (never typed by hand).
+`PROGRESS.md` carries the headline figures of each run with the date and the exact
+command. The first runs (2026-10-13) pre-date the corrections above and are kept only for
+comparison; the live model is the first run trained after them.

@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # LANDFIRE Product Service (lfps.usgs.gov/api) requires a contact e-mail per job;
     # unset disables the LANDFIRE fuel connector with an explanatory message.
     landfire_email: str | None = None
+    # "inline": the API runs portfolio jobs in a background task (local demo);
+    # "worker": only `python -m catrix.pipeline.worker` runs them (Docker Compose).
+    job_runner: str = "inline"
+    # Explicit registry location (containers); default: <data_dir>/../data_sources.yaml
+    registry_file: Path | None = None
 
     # NSI counties above this many structures are skipped unless --include-large.
     nsi_max_structures_per_county: int = 1_500_000
@@ -89,7 +94,10 @@ class Settings(BaseSettings):
 
     @property
     def registry_path(self) -> Path:
-        # data_sources.yaml lives at the repository root, next to the data directory.
+        # data_sources.yaml lives at the repository root, next to the data directory,
+        # unless CATRIX_REGISTRY_FILE points elsewhere (the Docker images mount it).
+        if self.registry_file is not None:
+            return self.registry_file
         return self.data_dir.parent / "data_sources.yaml"
 
     def ensure_dirs(self) -> None:

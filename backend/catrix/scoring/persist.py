@@ -8,12 +8,13 @@ predictions change.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from catrix.db.models import ModelVersion, Prediction, PropertyHazardAssessment
-from catrix.hazards.base import HazardResult
+from catrix.hazards.base import CoverageStatus, HazardResult
 from catrix.logging import get_logger
 from catrix.scoring.composite import METHOD_VERSION, compute_composite
 
@@ -93,12 +94,12 @@ def score_all_addresses(session: Session, batch: int = 5000) -> int:
             a.hazard_id,
             a.hazard_id,
             a.source_id,
-            a.coverage_status,
+            cast(CoverageStatus, a.coverage_status),
             classification=a.classification,
             value=a.value,
             units=a.units,
             details=a.details or {},
-        )  # type: ignore[arg-type]
+        )
     if current is not None:
         flush_one(current)
         n += 1

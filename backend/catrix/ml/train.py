@@ -109,6 +109,31 @@ class TrainedModel:
         return np.asarray(self.estimator.predict_proba(X)[:, 1], dtype=float)
 
 
+def _cv_average_precision(
+    est: Any, X: pd.DataFrame, y: np.ndarray, groups: np.ndarray, n_splits: int = 3
+) -> float:
+    """Mean average precision over GroupKFold folds (groups = feature years), fitting a
+    clone of ``est`` per fold. Falls back to a single fit/score when there are too few
+    groups or a fold has no positives."""
+    from sklearn.base import clone
+    from sklearn.metrics import average_precision_score
+    from sklearn.model_selection import GroupKFold
+
+    n_groups = len(np.unique(groups))
+    if n_groups < n_splits or y.sum() < n_splits:
+        est.fit(X, y)
+        return float(average_precision_score(y, est.predict_proba(X)[:, 1])) if y.sum() else 0.0
+    scores = []
+    for tr_idx, te_idx in GroupKFold(n_splits=n_splits).split(X, y, groups):
+        if y[te_idx].sum() == 0 or y[tr_idx].sum() == 0:
+            continue
+        m = clone(est).fit(X.iloc[tr_idx], y[tr_idx])
+        scores.append(
+            float(average_precision_score(y[te_idx], m.predict_proba(X.iloc[te_idx])[:, 1]))
+        )
+    return float(np.mean(scores)) if scores else 0.0
+
+
 def _pos_weight(y: np.ndarray) -> float:
     pos = max(int(y.sum()), 1)
     return float((len(y) - pos) / pos)
@@ -267,20 +292,20 @@ def train_all(
     )
     results.append((tm, _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)))
 
-    # Candidates: pick the best params per family by validation PR-AUC ----------------
+    # Candidates: pick the best params per family by PR-AUC under grouped cross-validation
+    # INSIDE the training years (folds = blocks of feature years), so the validation years
+    # are reserved for calibration and thresholds and the test years for reporting only.
+    tune_groups = train["feature_year"].to_numpy()
     for family, cands in _candidates(seed, pos_w, settings.ml_device).items():
         best: tuple[float, TrainedModel] | None = None
         for algo, est, params in cands:
-            est.fit(Xtr, ytr)
-            p_val = est.predict_proba(Xva)[:, 1]
-            from sklearn.metrics import average_precision_score
-
-            ap = float(average_precision_score(yva, p_val)) if yva.sum() else 0.0
-            log.info("candidate_evaluated", family=family, params=params, val_pr_auc=round(ap, 4))
+            ap = _cv_average_precision(est, Xtr, ytr, tune_groups)
+            log.info("candidate_evaluated", family=family, params=params, cv_pr_auc=round(ap, 4))
             if best is None or ap > best[0]:
                 best = (ap, TrainedModel(family, algo, est, None, 0.5, params))
         assert best is not None
         tm = best[1]
+        tm.estimator.fit(Xtr, ytr)
         # Calibrate on validation, then choose the threshold on calibrated val probabilities.
         raw_val = tm.estimator.predict_proba(Xva)[:, 1]
         tm.calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(
@@ -289,18 +314,29 @@ def train_all(
         tm.threshold = choose_threshold(yva, tm.predict_proba(Xva))
         results.append((tm, _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)))
 
-    # Selection: best test PR-AUC among non-baseline models, but only if it beats the baseline.
+    # Selection: best VALIDATION PR-AUC among learned models, provided it beats the
+    # baseline on validation. The test years play no part in choosing the model.
     base_doc = results[0][1]
-    cand = [(m, d) for m, d in results[1:] if d["test"]["metrics"]["pr_auc"] is not None]
-    selected = max(cand, key=lambda md: md[1]["test"]["metrics"]["pr_auc"]) if cand else results[0]
+    cand = [(m, d) for m, d in results[1:] if d["validation"]["metrics"]["pr_auc"] is not None]
+    selected = (
+        max(cand, key=lambda md: md[1]["validation"]["metrics"]["pr_auc"]) if cand else results[0]
+    )
     if (
-        base_doc["test"]["metrics"]["pr_auc"] is not None
-        and selected[1]["test"]["metrics"]["pr_auc"] <= base_doc["test"]["metrics"]["pr_auc"]
+        base_doc["validation"]["metrics"]["pr_auc"] is not None
+        and selected[1]["validation"]["metrics"]["pr_auc"]
+        <= base_doc["validation"]["metrics"]["pr_auc"]
     ):
         doc["status_detail"] = (
-            "No learned model beat the historical-frequency baseline on test PR-AUC; the baseline is reported as selected."
+            "No learned model beat the historical-frequency baseline on validation PR-AUC; "
+            "the baseline is reported as selected."
         )
         selected = results[0]
+    doc["selection"] = {
+        "hyperparameters": "grouped 3-fold CV by feature year within the training years (PR-AUC)",
+        "calibration": "isotonic regression fitted on the validation years",
+        "thresholds": "chosen on the validation years",
+        "model_choice": "validation PR-AUC; the test years and the spatial holdout are reported only",
+    }
     ver = version or f"wf-{datetime.now(UTC):%Y%m%d%H%M}"
     out_dir = settings.models_dir / ver
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,16 +375,17 @@ def _evaluate_model(
         "test": evaluate(yte, p_te, tm.threshold),
         "geographic_performance": geographic_performance(test, p_te, "county_fips"),
     }
-    ys = stest["label"].to_numpy() if len(stest) else None
-    ps = tm.predict_proba(stest[feats]) if len(stest) else None
-    if ps is not None:
+    has_spatial = len(stest) > 0
+    ys = stest["label"].to_numpy() if has_spatial else np.array([], dtype=int)
+    ps = tm.predict_proba(stest[feats]) if has_spatial else np.array([], dtype=float)
+    if has_spatial:
         d["spatial_test"] = evaluate(ys, ps, tm.threshold)
     # Alternative operating points (all chosen on validation) and a flagged-share sweep so
     # the dashboard can show the confusion matrix at any threshold.
     # Raw (uncalibrated) scores rank rows with far fewer ties than the isotonic
     # probabilities, so share-based points flag exactly the share they promise.
     r_va, r_te = tm.raw_scores(Xva), tm.raw_scores(Xte)
-    r_s = tm.raw_scores(stest[feats]) if ps is not None else None
+    r_s = tm.raw_scores(stest[feats]) if has_spatial else np.array([], dtype=float)
     ops = operating_points(yva, p_va)
     d["operating_points"] = [
         {
@@ -357,7 +394,7 @@ def _evaluate_model(
             "threshold": thr,
             "validation": confusion_at(yva, p_va, thr),
             "test": confusion_at(yte, p_te, thr),
-            **({"spatial_test": confusion_at(ys, ps, thr)} if ps is not None else {}),
+            **({"spatial_test": confusion_at(ys, ps, thr)} if has_spatial else {}),
         }
         for name, thr in ops.items()
     ] + [
@@ -367,13 +404,13 @@ def _evaluate_model(
             "threshold": confusion_top_share(yte, p_te, r_te, share)["threshold"],
             "validation": confusion_top_share(yva, p_va, r_va, share),
             "test": confusion_top_share(yte, p_te, r_te, share),
-            **({"spatial_test": confusion_top_share(ys, ps, r_s, share)} if ps is not None else {}),
+            **({"spatial_test": confusion_top_share(ys, ps, r_s, share)} if has_spatial else {}),
         }
         for name, share in SHARE_POINTS
     ]
     d["threshold_sweep"] = {
         "test": threshold_sweep(yte, p_te, r_te),
-        **({"spatial_test": threshold_sweep(ys, ps, r_s)} if ps is not None else {}),
+        **({"spatial_test": threshold_sweep(ys, ps, r_s)} if has_spatial else {}),
     }
     d["feature_importance"] = feature_importance(tm, feats)
     try:

@@ -1,4 +1,7 @@
-.PHONY: up down api test lint ingest assess ml
+# All `catrix` commands run from the repository root: the registry (data_sources.yaml),
+# the .env file and the data directory are resolved relative to it. Tests and linters run
+# inside backend/, where their configuration lives.
+.PHONY: up down api test test-integration lint ingest assess ml
 
 up:
 	docker compose up --build
@@ -7,7 +10,7 @@ down:
 	docker compose down
 
 api:
-	cd backend && catrix api --reload
+	catrix api
 
 test:
 	cd backend && pytest tests/unit -q
@@ -19,10 +22,10 @@ lint:
 	cd backend && ruff check . && ruff format --check . && mypy catrix
 
 ingest:
-	cd backend && catrix ingest all
+	catrix ingest all
 
 assess:
-	cd backend && catrix assess && catrix score && catrix quality
+	catrix assess && catrix score && catrix quality
 
 ml:
-	cd backend && catrix ml build-dataset && catrix ml train && catrix ml predict
+	catrix ml build-dataset && catrix ml train && catrix ml predict

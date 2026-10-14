@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from catrix.config import get_settings
@@ -93,6 +95,36 @@ def sync_registry(session: Session, registry: Registry | None = None) -> int:
             row.source_url = spec.api_url or spec.download_url or spec.url
     session.flush()
     return n
+
+
+def ensure_sources(session: Session, source_ids: Iterable[str]) -> int:
+    """Make sure a ``hazard_sources`` row exists for every id (assessment rows reference
+    the source by foreign key even when the source was never ingested, e.g. an
+    'unavailable' result). Unknown ids get a minimal row named after themselves."""
+    wanted = {s for s in source_ids if s}
+    if not wanted:
+        return 0
+    existing = set(
+        session.execute(select(HazardSource.id).where(HazardSource.id.in_(wanted))).scalars()
+    )
+    try:
+        reg: Registry | None = load_registry()
+    except FileNotFoundError:
+        reg = None
+    added = 0
+    for sid in sorted(wanted - existing):
+        spec = reg.get(sid) if reg is not None and sid in reg.ids() else None
+        session.add(
+            HazardSource(
+                id=sid,
+                name=spec.name if spec else sid,
+                provider=spec.provider if spec else None,
+            )
+        )
+        added += 1
+    if added:
+        session.flush()
+    return added
 
 
 def mark_ingested(

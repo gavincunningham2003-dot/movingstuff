@@ -76,7 +76,7 @@ def data_quality(db: DB) -> DataQualityOut:
             detail=(", ".join(f"{k}={v}" for k, v in (r.detail or {}).items()) or None),
         )
         for r in latest_reports(db)
-    ]  # type: ignore[arg-type]
+    ]
     errors = [
         {
             "source_id": r.id,

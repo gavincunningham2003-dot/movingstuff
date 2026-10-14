@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from catrix.geo.spatial import grid_cell_centroid, grid_cell_ids
+from catrix.ingest.store import rows
 
 TOP_N = 25
 CONCENTRATION_CELL_KM = 10.0
@@ -134,7 +135,7 @@ def summarise_portfolio(df: pd.DataFrame, county_names: dict[str, str]) -> dict[
     for cell, g in work.groupby("_cell"):
         lon, lat = grid_cell_centroid(str(cell), CONCENTRATION_CELL_KM)
         cell_tiv = float(g["insured_value"].sum()) if g["insured_value"].notna().any() else None
-        dom = Counter()
+        dom: Counter[str] = Counter()
         for h in g["hazards"]:
             for hid in ("wildfire_fhsz", "flood_nfhl", "earthquake_pga", "tsunami", "landslide"):
                 r = h.get(hid, {})
@@ -196,7 +197,7 @@ def summarise_portfolio(df: pd.DataFrame, county_names: dict[str, str]) -> dict[
             "composite_score": None if pd.isna(r.composite_score) else float(r.composite_score),
             "drivers": drivers(r.hazards or {}),
         }
-        for r in ranked.itertuples()
+        for r in rows(ranked)
     ]
 
     scores = work["composite_score"].dropna()

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 CoverageStatus = Literal["covered", "not_in_hazard_area", "outside_coverage", "unavailable"]
 Method = Literal["static_overlay", "raster_sample", "point_service", "ml_model", "regional_index"]
+Confidence = Literal["high", "medium", "low"]
 
 
 @dataclass

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -33,7 +33,7 @@ from catrix.db.models import (
 )
 from catrix.finance.scenarios import compute_scenarios
 from catrix.finance.vulnerability import BuildingProfile, hazus_building_type
-from catrix.hazards.base import HazardResult
+from catrix.hazards.base import Confidence, CoverageStatus, HazardResult, Method
 from catrix.hazards.registry import catalogue
 from catrix.scoring.composite import compute_composite
 
@@ -93,7 +93,8 @@ def list_properties(
 ) -> PagedProperties:
     settings = get_settings()
     limit = min(limit, settings.max_page_size)
-    conds, params = [], {}
+    conds: list[str] = []
+    params: dict[str, Any] = {}
     if q:
         if q.strip().isdigit():
             conds.append("a.id = :qid")
@@ -141,7 +142,8 @@ def properties_geojson(
     bb = parse_bbox(bbox)
     if bb is None and county is None:
         raise HTTPException(422, "bbox or county is required")
-    conds, params = [], {}
+    conds: list[str] = []
+    params: dict[str, Any] = {}
     if bb:
         conds.append("a.geom && ST_MakeEnvelope(:minx,:miny,:maxx,:maxy,4326)")
         params.update(dict(zip(("minx", "miny", "maxx", "maxy"), bb, strict=True)))
@@ -180,12 +182,12 @@ def _hazard_out(a: PropertyHazardAssessment) -> HazardAssessmentOut:
         value=a.value,
         units=a.units,
         probability_horizon=a.probability_horizon,
-        coverage_status=a.coverage_status,
-        confidence=a.confidence,
-        method=a.method,
+        coverage_status=cast(CoverageStatus, a.coverage_status),
+        confidence=cast(Confidence, a.confidence),
+        method=cast(Method, a.method),
         details=a.details or {},
         caveats=list(a.caveats or []),
-    )  # type: ignore[arg-type]
+    )
 
 
 def _as_result(a: PropertyHazardAssessment) -> HazardResult:
@@ -193,17 +195,17 @@ def _as_result(a: PropertyHazardAssessment) -> HazardResult:
         hazard_id=a.hazard_id,
         hazard_name=HAZARD_NAMES.get(a.hazard_id, a.hazard_id),
         source_id=a.source_id,
-        coverage_status=a.coverage_status,
+        coverage_status=cast(CoverageStatus, a.coverage_status),
         source_version=a.source_version,
         classification=a.classification,
         value=a.value,
         units=a.units,
         probability_horizon=a.probability_horizon,
-        confidence=a.confidence,
-        method=a.method,
+        confidence=cast(Confidence, a.confidence),
+        method=cast(Method, a.method),
         details=a.details or {},
         caveats=list(a.caveats or []),
-    )  # type: ignore[arg-type]
+    )
 
 
 def _prediction_out(db: DB, address_id: int) -> WildfirePredictionOut | None:
@@ -366,7 +368,7 @@ def get_property(property_id: int, db: DB) -> PropertyDetailOut:
         hazards=[_hazard_out(a) for a in assessments],
         prediction=pred,
         score=CompositeScoreOut(**comp.to_dict()) if comp else None,
-        coverage={a.hazard_id: a.coverage_status for a in assessments},  # type: ignore[misc]
+        coverage={a.hazard_id: a.coverage_status for a in assessments},
         financial=FinancialScenarioSetOut(
             **{k: v for k, v in fin.items() if k != "assumptions_version"}
         )

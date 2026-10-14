@@ -74,15 +74,16 @@ class EnvironmentConnector:
         nlcd_ds = open_raster(nlcd) if nlcd else None
         lf_ds = open_raster(lf) if lf else None
         try:
-            for aid, r in df.iterrows():
+            for aid_raw, r in df.iterrows():
+                aid = int(str(aid_raw))
                 fields: dict[str, Any] = {"sources": {}}
-                f = faults.get(int(aid))
+                f = faults.get(aid)
                 if f:
                     fields["distance_to_fault_m"] = f["distance_m"]
                     fields["sources"]["fault"] = "cgs_qfaults"
-                fh = fires.get(int(aid), {})
+                fh = fires.get(aid, {})
                 fields["fires_within_5km_since_1990"] = int(fh.get("n_fires_radius") or 0)
-                f1 = fires_1km.get(int(aid), {})
+                f1 = fires_1km.get(aid, {})
                 last = f1.get("last_fire_year")
                 fields["years_since_last_fire_within_1km"] = (
                     float(pd.Timestamp.utcnow().year - last) if last else None
@@ -99,7 +100,7 @@ class EnvironmentConnector:
                     fm = sample_categorical(lf_ds, float(r.lon), float(r.lat))
                     fields["fuel_model"] = f"FBFM40-{fm}" if fm is not None else None
                     fields["sources"]["fuel"] = f"landfire_fuels:{lf.name}"  # type: ignore[union-attr]
-                upsert_observation(session, int(aid), **fields)
+                upsert_observation(session, aid, **fields)
                 n += 1
                 if n % 2000 == 0:
                     session.flush()

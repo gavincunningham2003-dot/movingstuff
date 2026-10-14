@@ -27,6 +27,7 @@ from catrix.geo.spatial import nearest_distance_m
 from catrix.ingest.base import IngestResult
 from catrix.ingest.http import SourceUnavailableError, download_file
 from catrix.ingest.registry import load_registry, mark_failed, mark_ingested
+from catrix.ingest.store import rows as iter_rows
 from catrix.ingest.store import write_parquet
 from catrix.logging import get_logger
 
@@ -66,7 +67,7 @@ def _uncertainty(d: float) -> str:
     return "high"
 
 
-def parse_nsi_geojson(path) -> gpd.GeoDataFrame:  # type: ignore[no-untyped-def]
+def parse_nsi_geojson(path) -> gpd.GeoDataFrame:
     """Read an NSI FeatureCollection; validates the fields the vulnerability module needs."""
     gdf = pyogrio.read_dataframe(str(path))
     missing = [c for c in REQUIRED if c not in gdf.columns]
@@ -228,7 +229,7 @@ class NSIConnector:
                 else float(m.match_distance_m),
                 "uncertainty": m.uncertainty,
             }
-            for m in matches.itertuples()
+            for m in iter_rows(matches)
         ] + [
             {
                 "address_id": int(a),

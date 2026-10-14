@@ -13,6 +13,7 @@ from catrix.db.models import RegionalIndex
 from catrix.ingest.base import IngestResult
 from catrix.ingest.http import SourceUnavailableError, download_file, get_json
 from catrix.ingest.registry import load_registry, mark_failed, mark_ingested
+from catrix.ingest.store import rows as iter_rows
 from catrix.ingest.store import write_parquet
 from catrix.logging import get_logger
 
@@ -126,7 +127,7 @@ class NRIConnector:
         version = str(ca["NRI_VER"].iloc[0]) if "NRI_VER" in ca.columns and len(ca) else None
         session.execute(delete(RegionalIndex).where(RegionalIndex.source_id == SOURCE_ID))
         rows = []
-        for r in ca.itertuples():
+        for r in iter_rows(ca):
             fips = r.STCOFIPS.zfill(5)
             for prefix, hazard in METRICS.items():
                 score_col, rating_col, eal_col = (

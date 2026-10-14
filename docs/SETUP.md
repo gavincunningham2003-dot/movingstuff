@@ -20,8 +20,15 @@ Key variables (`CATRIX_` prefix): `DATABASE_URL`, `DATA_DIR`, `ADDRESS_SAMPLE_SI
 
 ```bash
 docker compose up -d db
-cd backend && pip install -e ".[dev]"
+pip install -e "backend[dev]"      # from the repository root
 catrix db upgrade          # alembic upgrade head (creates the PostGIS extension and 20 tables)
+```
+
+Run every `catrix` command from the repository root: `.env`, `data/` and
+`data_sources.yaml` are resolved relative to the working directory (or set
+`CATRIX_DATA_DIR` and `CATRIX_REGISTRY_FILE` explicitly, as the Docker images do).
+
+```bash
 ```
 
 ## 3. Address data (OpenAddresses)

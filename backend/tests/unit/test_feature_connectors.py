@@ -113,7 +113,8 @@ def test_sample_values_and_window_fraction_and_nlcd_features(tmp_path):
 def test_match_version_year_and_lag():
     assert match_version_year(2018, [2001, 2016, 2022]) == (2016, 2)
     assert match_version_year(2016, [2001, 2016, 2022]) == (2016, 0)
-    assert match_version_year(1995, [2001, 2016]) == (2001, 6)
+    # Never backfill from a later edition: a 1995 row must not receive a 2001 map.
+    assert match_version_year(1995, [2001, 2016]) is None
     assert match_version_year(2030, [2001, 2016, 2022]) == (2022, 8)
 
 
@@ -169,8 +170,62 @@ def test_load_optional_features_merges_and_expands(tmp_path):
         out.loc[1999, "precip_pct_normal"]
     )
     assert out.loc[2001, "drought_d2_share"] == 30.0 and np.isnan(out.loc[2000, "drought_d2_share"])
-    assert out.loc[1999, "fuel_group"] == 2 and out.loc[1999, "fuel_version_lag_years"] == 2
+    # 1999 pre-dates the earliest edition (2001): no backfill from the future, so NaN.
+    assert np.isnan(out.loc[1999, "fuel_group"]) and np.isnan(
+        out.loc[1999, "fuel_version_lag_years"]
+    )
     assert out.loc[2010, "fuel_group"] == 2 and out.loc[2010, "fuel_version_lag_years"] == 9
     assert out.loc[2016, "fuel_group"] == 3 and out.loc[2016, "fuel_version_lag_years"] == 0
     assert out.loc[2017, "fuel_group"] == 3 and out.loc[2017, "fuel_version_lag_years"] == 1
     assert "lc_developed_intensity" not in out.columns  # no land-cover table written
+
+
+def test_leakage_check_rejects_future_editions():
+    import pandas as pd
+
+    from catrix.ml.dataset import leakage_checks
+
+    df = pd.DataFrame(
+        {
+            "address_id": [1, 1],
+            "feature_year": [2000, 2001],
+            "target_year": [2001, 2002],
+            "ever_inside_perimeter": [0, 0],
+            "fuel_version_lag_years": [-16.0, 0.0],
+        }
+    )
+    assert any("fuel_version_lag_years" in p for p in leakage_checks(df))
+    df["fuel_version_lag_years"] = [float("nan"), 0.0]
+    assert not leakage_checks(df)
+
+
+def test_point_features_never_use_the_index_as_an_address_id(tmp_path, monkeypatch):
+    """A portfolio row with DataFrame index 1 must not inherit address 1's features; an
+    explicit address_id column does match."""
+    import catrix.ml.optional_features as of
+    from catrix.ingest.store import write_parquet
+
+    write_parquet(
+        pd.DataFrame(
+            {
+                "address_id": [1],
+                "feature_year": [2020],
+                "precip_pct_normal": [150.0],
+                "precip_prev_year_pct_normal": [90.0],
+                "precip_3y_pct_normal": [110.0],
+                "tmax_anomaly_c": [1.5],
+            }
+        ),
+        "climate_features",
+        subdir="ml",
+    )
+    for name in ("_raster_fallback", "_landcover_fallback", "_climate_fallback"):
+        monkeypatch.setattr(of, name, lambda *a, **k: None)
+    # index 1, no address_id column: must stay NaN
+    pts = pd.DataFrame({"lon": [-122.0, -122.1], "lat": [37.0, 37.1]}, index=[0, 1])
+    out = of.optional_features_for_points(None, pts, 2020)
+    assert out["precip_pct_normal"].isna().all()
+    # explicit address_id column: matched regardless of the index
+    pts2 = pd.DataFrame({"lon": [-122.0], "lat": [37.0], "address_id": [1]}, index=[42])
+    out2 = of.optional_features_for_points(None, pts2, 2020)
+    assert out2.loc[42, "precip_pct_normal"] == 150.0

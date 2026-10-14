@@ -6,6 +6,7 @@ import io
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from catrix.geo.validation import check_coordinates, dedup_key
@@ -105,12 +106,15 @@ def parse_portfolio_csv(content: bytes | str) -> tuple[pd.DataFrame, ValidationR
         else:
             reason = "outside California bounding box"
         errors.append({"row": int(rn), "error": reason})
+    bad_financial = np.zeros(len(df), dtype=bool)
     for col in ("property_value", "insured_value", "deductible"):
         if df[col] is not None and df[col].notna().any():
-            bad = df[col].notna() & (df[col] < 0)
+            bad = (df[col].notna() & (df[col] < 0)).to_numpy()
             for rn in df.loc[bad, "row_number"]:
                 errors.append({"row": int(rn), "error": f"negative {col}"})
-    valid = check.valid_mask & ~empty_id.to_numpy()
+            bad_financial |= bad
+    # A row with an impossible financial value is invalid, not merely annotated.
+    valid = check.valid_mask & ~empty_id.to_numpy() & ~bad_financial
     dup_ids = df["property_id"].duplicated(keep="first") & valid
     df["dedup_key"] = [
         dedup_key(la, lo, precision_m=5.0) if ok else None

@@ -456,6 +456,9 @@ export interface ConfusionAt {
   recall: number | null;
   specificity: number | null;
   lift?: number | null;
+  recall_ci95?: [number, number] | null;
+  n_positives?: number;
+  kind?: 'fixed_threshold' | 'ranking_budget';
 }
 
 export interface SweepPoint extends ConfusionAt {

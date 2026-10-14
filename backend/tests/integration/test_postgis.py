@@ -9,7 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from catrix.db.models import Address, Base, HazardGeometry, HazardSource, Region, WildfireEvent
+from catrix.db.models import (
+    Address,
+    Base,
+    HazardGeometry,
+    HazardLine,
+    HazardSource,
+    Region,
+    WildfireEvent,
+)
 from tests.conftest import integration_db_url, requires_db
 
 pytestmark = [pytest.mark.integration, requires_db]
@@ -45,6 +53,10 @@ def seeded(engine):
             id="calfire_fire_perimeters", name="perims", ingestion_status="ingested", version="test"
         )
     )
+    s.add(
+        HazardSource(id="cgs_qfaults", name="faults", ingestion_status="ingested", version="test")
+    )
+    s.add(HazardSource(id="fema_nfhl", name="nfhl", ingestion_status="ingested", version="test"))
     s.add(
         Region(
             region_type="county",
@@ -111,7 +123,25 @@ def seeded(engine):
             year=1991,
             fire_name="OLD SYNTHETIC FIRE",
             gis_acres=50.0,
-            geom="SRID=4326;MULTIPOLYGON(((-122.27 37.82,-122.24 37.82,-122.24 37.83,-122.27 37.83,-122.27 37.82)))",
+            geom="SRID=4326;MULTIPOLYGON(((-122.27 37.79,-122.24 37.79,-122.24 37.83,-122.27 37.83,-122.27 37.79)))",
+        )
+    )
+    s.add(
+        HazardGeometry(
+            source_id="fema_nfhl",
+            hazard_id="flood_nfhl",
+            classification="AE",
+            attributes={"FLD_ZONE": "AE", "ZONE_SUBTY": None, "SFHA_TF": "T", "STATIC_BFE": 12.0},
+            geom="SRID=4326;MULTIPOLYGON(((-122.28 37.86,-122.26 37.86,-122.26 37.88,-122.28 37.88,-122.28 37.86)))",
+        )
+    )
+    s.add(
+        HazardLine(
+            source_id="cgs_qfaults",
+            hazard_id="fault",
+            name="SYNTHETIC FAULT",
+            attributes={},
+            geom="SRID=4326;MULTILINESTRING((-122.30 37.80,-122.30 37.90))",
         )
     )
     s.commit()
@@ -125,9 +155,10 @@ def test_polygon_lookup_and_fire_history(seeded):
     pts = pd.DataFrame({"lon": [-122.27, -122.25], "lat": [37.87, 37.80]}, index=[1, 2])
     hits = polygon_lookup(seeded, "wildfire_fhsz", pts)
     assert hits[1]["classification"] == "Very High" and 2 not in hits
-    fh = fire_history_lookup(seeded, pts, since_year=1990, radius_m=5000)
+    fh = fire_history_lookup(seeded, pts, since_year=1990, radius_m=10_000)
     assert fh[1]["inside_any"] is True and fh[1]["last_inside_year"] == 2020
-    assert fh[2]["n_fires_radius"] == 2 and fh[2]["inside_any"] is True  # 1991 fire covers point 2
+    # the 1991 fire covers point 2; the 2020 fire is ~6.7 km north of it (inside 10 km)
+    assert fh[2]["n_fires_radius"] == 2 and fh[2]["inside_any"] is True
     limited = fire_history_lookup(seeded, pts, since_year=1990, radius_m=5000, until_year=2019)
     assert limited[1]["inside_any"] is False  # 2020 perimeter excluded: no leakage
 
@@ -136,10 +167,28 @@ def test_assess_and_score_all_addresses(seeded):
     from catrix.hazards.registry import assess_all_addresses
     from catrix.scoring.persist import score_all_addresses
 
+    # wildfire + earthquake families cover 65 % of the index weight, enough for a score;
+    # tsunami is deliberately not ingested and must be reported as unavailable.
     counts = assess_all_addresses(
-        seeded, hazard_ids=["wildfire_fhsz", "wildfire_history", "tsunami"], batch_size=1
+        seeded,
+        hazard_ids=[
+            "wildfire_fhsz",
+            "wildfire_history",
+            "earthquake_fault_proximity",
+            "flood_nfhl",
+            "tsunami",
+        ],
+        batch_size=1,
     )
-    assert counts == {"wildfire_fhsz": 2, "wildfire_history": 2, "tsunami": 2}
+    # wildfire (0.35) + flood (0.20) families cover 55 % of the index weight, enough for a
+    # score without any network lookups; tsunami is deliberately not ingested.
+    assert counts == {
+        "wildfire_fhsz": 2,
+        "wildfire_history": 2,
+        "earthquake_fault_proximity": 2,
+        "flood_nfhl": 2,
+        "tsunami": 2,
+    }
     rows = seeded.execute(
         text(
             "SELECT hazard_id, coverage_status FROM property_hazard_assessments WHERE address_id = 1 ORDER BY 1"

@@ -93,9 +93,8 @@ docker compose up --build            # PostGIS, API (:8000), worker, frontend (:
 Then, in another shell (or `docker compose exec api ...`):
 
 ```bash
-cd backend
-pip install -e ".[dev]"
-catrix db upgrade
+pip install -e "backend[dev]"       # from the repository root
+catrix db upgrade                    # run every catrix command from the repository root
 catrix ingest all --sample 15000     # counties → addresses → perimeters → layers → faults → events → NRI → buildings → DEM → NSI → climate/drought/fuel/land-cover features → environment
 catrix assess                        # every hazard module over every address
 catrix score                         # composite screening index
@@ -150,7 +149,7 @@ Screenshots will be added once the stack has been run (`docs/screenshots/`).
 ## Tests
 
 ```bash
-cd backend
+cd backend                                 # tests and linters run inside backend/
 pytest tests/unit -q                       # no network, no database
 CATRIX_TEST_DATABASE_URL=postgresql+psycopg://catrix:catrix@localhost:5432/catrix_test pytest tests/integration -m integration
 pytest tests/live -m live                  # opt-in: real endpoints

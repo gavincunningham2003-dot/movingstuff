@@ -19,12 +19,13 @@ from rasterio.transform import rowcol
 from sqlalchemy.orm import Session
 
 from catrix.geo.raster import open_raster
-from catrix.hazards.base import HazardInfo, HazardModule, HazardResult
+from catrix.hazards.base import HazardInfo, HazardModule, HazardResult, Method
 from catrix.hazards.lookup import polygon_count, polygon_lookup, regional_lookup, source_state
 from catrix.hazards.point_cache import PointCache
 from catrix.ingest.arcgis import mapserver_identify_raster_batch
 from catrix.ingest.http import SourceUnavailableError, download_file, get_text
 from catrix.ingest.registry import load_registry
+from catrix.ingest.store import rows
 from catrix.logging import get_logger
 
 log = get_logger(__name__)
@@ -62,7 +63,7 @@ class LandslideSusceptibilityModule(HazardModule):
         spec = load_registry().get(self.info.source_ids[0])
         assert spec.api_url
         cache = PointCache(self.info.source_ids[0])
-        coords = [(float(r.lon), float(r.lat)) for r in points.itertuples()]
+        coords = [(float(r.lon), float(r.lat)) for r in rows(points)]
 
         # One multipoint identify per IDENTIFY_BATCH uncached points instead of one request
         # per address (the service is a raster behind a MapServer: no download, no query).
@@ -80,7 +81,7 @@ class LandslideSusceptibilityModule(HazardModule):
                     raw = (attrs or {}).get("Raster.Value") or (attrs or {}).get(
                         "UniqueValue.Pixel Value"
                     )
-                    cls = int(raw) if raw not in (None, "", "NoData") else None
+                    cls = None if raw in (None, "", "NoData") else int(float(str(raw)))
                     cache.put(lon, lat, {"class": cls})
         cache.flush()
 
@@ -329,7 +330,7 @@ class ExtremeRainfallModule(HazardModule):
 
     def assess(self, session: Session, points: pd.DataFrame) -> list[HazardResult]:
         spec = load_registry().get(self.info.source_ids[0])
-        coords = [(float(r.lon), float(r.lat)) for r in points.itertuples()]
+        coords = [(float(r.lon), float(r.lat)) for r in rows(points)]
 
         # Preferred path: the downloadable Volume 6 grid, sampled locally (one 3.6 MB file
         # replaces one web request per address). Results are written to the same point
@@ -337,7 +338,7 @@ class ExtremeRainfallModule(HazardModule):
         cache = PointCache(self.info.source_ids[0])
         missing = [c for c in coords if cache.get(*c) is None]
         grid_vals = _atlas14_grid_values(spec, missing) if missing else []
-        method = "raster_sample"
+        method: Method = "raster_sample"
         if grid_vals is not None:
             for (lon, lat), v in zip(missing, grid_vals, strict=True):
                 cache.put(lon, lat, {"depth_mm": v})
@@ -353,6 +354,7 @@ class ExtremeRainfallModule(HazardModule):
             cached = cache.get(lon, lat)
             try:
                 if cached is None:
+                    assert spec.api_url is not None
                     txt = get_text(self.info.source_ids[0], spec.api_url.format(lat=lat, lon=lon))
                     val = self.parse_atlas14(txt)
                     cache.put(lon, lat, {"depth_mm": val})
@@ -432,7 +434,7 @@ class RegionalIndexModule(HazardModule):
             points["county_fips"].dropna().unique(),
         )
         out = []
-        for r in points.itertuples():
+        for r in rows(points):
             fips = getattr(r, "county_fips", None)
             v = (vals.get(fips) or {}).get(metric) if fips else None
             if v is None or v.get("value") is None:
@@ -448,7 +450,7 @@ class RegionalIndexModule(HazardModule):
                     )
                 )
             else:
-                eal = (vals.get(fips) or {}).get(f"{self.nri_key}_eal_total_usd", {})
+                eal = (vals.get(fips or "") or {}).get(f"{self.nri_key}_eal_total_usd", {})
                 out.append(
                     HazardResult(
                         self.info.hazard_id,

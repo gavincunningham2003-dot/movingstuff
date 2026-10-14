@@ -350,6 +350,31 @@ target has 7.6x the positives (3,526) and a much more usable precision-recall tr
 for screening, at the cost of a less specific meaning. Both runs are selectable on the
 Model Analytics page; the live model remains the inside-perimeter, no-lag run.
 
+### External review and corrections (2026-10-14, branch `fix/model-validation-and-reliability`)
+
+A line-by-line review of commit e6fa237 listed 16 items; the 12 fixes were verified
+against the code and implemented, the 4 improvements are tracked below.
+
+| # | Finding (confirmed) | Fix |
+|---|---|---|
+| 1 | model selected by **test** PR-AUC | selection and the baseline comparison use validation PR-AUC; `doc["selection"]` records the protocol |
+| 2 | years before the first LANDFIRE/NLCD edition were backfilled with a later map | `match_version_year` returns None (features stay NaN); `_expand_periodic` skips those years; `leakage_checks` rejects negative lags; unit tests updated |
+| 3 | portfolio rows matched to address features by DataFrame index | `optional_features_for_points` only honours an explicit `address_id` column; `predict_all_addresses` passes it; new unit test |
+| 4 | only fuel features were coordinate-sampled for new points | `_landcover_fallback` (NLCD tiles) and `_climate_fallback` (PRISM annual grids + normals) added; terrain/footprints already handled by `point_features.py` |
+| 5 | tuning, calibration and thresholds all on validation | hyper-parameters by grouped 3-fold CV inside the training years (`_cv_average_precision`); validation keeps calibration + thresholds; test reported only |
+| 6 | retrain after the chronology fix | both datasets rebuilt and both scenarios retrained (results below) |
+| 7 | fixed thresholds vs ranking budgets conflated | every operating point carries `kind` (fixed_threshold / ranking_budget), `recall_ci95` (Wilson) and `n_positives`; labels and the dashboard panel say which is which |
+| 8 | negative financial values stayed valid | they now invalidate the row; test added |
+| 9 | API background task and the worker could both run a job | `claim_job()` atomic pending→claimed; the API claims before running; `CATRIX_JOB_RUNNER=worker` disables the inline path (compose sets it) |
+| 10 | Docker image missing README; registry not visible in containers | `COPY README.md`; `CATRIX_REGISTRY_FILE` setting; compose mounts `data_sources.yaml` and sets it for api and worker |
+| 11 | Makefile/docs ran `catrix` from `backend/` | all `catrix` recipes and docs run from the repository root; tests/linters stay in `backend/` |
+| 12 | 93 mypy errors (CI red) | 0 errors without disabling checks: `rows()` typed helper for itertuples, Literal casts for DB strings, structlog `Processor` annotations, narrowed Optionals |
+
+Also: `/docs` link fixed to `/api/docs`; `.env.example` documents the new settings.
+Still open from the review (improvements): duplicate exposure handling (#13), API
+authentication/rate limiting for public deployment (#14), fully reproducible experiment
+scripts and committed final metrics (#16); documentation (#15) is updated in this branch.
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.

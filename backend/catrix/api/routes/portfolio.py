@@ -26,14 +26,22 @@ from catrix.db.models import (
     Region,
 )
 from catrix.db.session import session_scope
-from catrix.portfolio.enrich import create_portfolio, run_portfolio_job
+from catrix.logging import get_logger
+from catrix.portfolio.enrich import claim_job, create_portfolio, run_portfolio_job
 from catrix.portfolio.export import export_rows, to_csv, to_json
 
+log = get_logger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 def _run_job(job_id: uuid.UUID) -> None:
+    # Claim atomically so the database worker (if one is running) cannot pick the same
+    # job up: only a 'pending' job can be claimed, and only once.
+    with session_scope() as s:
+        if not claim_job(s, job_id):
+            log.info("job_already_claimed", job=str(job_id))
+            return
     with session_scope() as s:
         run_portfolio_job(s, job_id)
 
@@ -52,7 +60,7 @@ def _status(pf: Portfolio) -> PortfolioStatusOut:
         validation_errors=pf.validation_errors or [],
         progress=progress,
         error=pf.error,
-    )  # type: ignore[arg-type]
+    )
 
 
 @router.get("/summary", response_model=PortfolioSummaryOut)
@@ -138,7 +146,7 @@ def base_summary(db: DB) -> PortfolioSummaryOut:
         model=model,
         interpretation_notes=notes,
         generated_at=datetime.now(UTC),
-    )  # type: ignore[arg-type]
+    )
 
 
 @router.get("/example.csv")
@@ -171,7 +179,8 @@ async def upload_portfolio(
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     db.commit()
-    background.add_task(_run_job, job.id)
+    if get_settings().job_runner != "worker":
+        background.add_task(_run_job, job.id)
     return PortfolioUploadResponse(
         portfolio_id=str(pf.id), job_id=str(job.id), status=pf.status, n_rows_received=pf.n_rows
     )

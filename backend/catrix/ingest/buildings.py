@@ -28,6 +28,7 @@ from catrix.geo.spatial import count_within_radius, nearest_distance_m
 from catrix.ingest.base import IngestResult
 from catrix.ingest.http import SourceUnavailableError, download_file
 from catrix.ingest.registry import load_registry, mark_failed, mark_ingested
+from catrix.ingest.store import rows as iter_rows
 from catrix.ingest.store import write_parquet
 from catrix.logging import get_logger
 
@@ -161,7 +162,7 @@ class BuildingsConnector:
                 "county_fips": r.county_fips if isinstance(r.county_fips, str) else None,
                 "geom": f"SRID=4326;{r.geometry.wkt}",
             }
-            for r in gdf.itertuples()
+            for r in iter_rows(gdf)
         ]
         session.bulk_insert_mappings(Building, rows)
         session.flush()
@@ -187,7 +188,7 @@ class BuildingsConnector:
                     "buildings_within_100m": int(m.buildings_within_100m),
                     "uncertainty": m.uncertainty,
                 }
-                for m in matches.itertuples()
+                for m in iter_rows(matches)
             ],
         )
         session.flush()

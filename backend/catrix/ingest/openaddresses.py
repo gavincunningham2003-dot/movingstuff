@@ -35,6 +35,7 @@ from catrix.geo.validation import check_coordinates, dedup_key
 from catrix.ingest.base import IngestResult
 from catrix.ingest.http import SourceUnavailableError, download_file, get_json
 from catrix.ingest.registry import load_registry, mark_failed, mark_ingested
+from catrix.ingest.store import rows as iter_rows
 from catrix.ingest.store import write_parquet
 from catrix.logging import get_logger
 
@@ -330,7 +331,7 @@ class OpenAddressesConnector:
                 "geom": f"SRID=4326;POINT({float(r.lon)} {float(r.lat)})",
                 "dedup_key": r.dedup_key,
             }
-            for r in df.itertuples()
+            for r in iter_rows(df)
         ]
         # Rows without a hash cannot violate the (source_id, hash) uniqueness constraint.
         session.bulk_insert_mappings(Address, rows)

@@ -174,7 +174,7 @@ export const apiLinks = {
   portfolioExport: (id: string, format: 'csv' | 'json') =>
     buildUrl(`/portfolio/${encodeURIComponent(id)}/export`, { format }),
   exampleCsv: () => buildUrl('/portfolio/example.csv'),
-  docs: () => `${API_BASE_URL}/docs`,
+  docs: () => `${API_BASE_URL}/api/docs`,
 };
 
 export function isApiError(err: unknown): err is ApiError {

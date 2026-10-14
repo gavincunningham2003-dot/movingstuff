@@ -195,6 +195,8 @@ def predict_all_addresses(session: Session, *, feature_year: int | None = None) 
     n = 0
     for start in range(0, len(st), 1000):
         chunk = st.iloc[start : start + 1000]
+        # address_id travels as a column: the index is never treated as an id.
+        chunk = chunk.assign(address_id=chunk.index.to_numpy())
         preds = predict_for_points(session, chunk, feature_year=fy, with_shap=True)
         session.bulk_insert_mappings(
             Prediction,

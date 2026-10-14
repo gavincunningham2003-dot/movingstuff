@@ -159,7 +159,9 @@ class PolygonLayerConnector:
                             if rec.get(spec.class_field) is not None
                             else None
                         ),
-                        "class_code": int(code) if code is not None and pd.notna(code) else None,
+                        "class_code": int(float(str(code)))
+                        if code is not None and pd.notna(code)
+                        else None,
                         "attributes": {
                             k: (None if (isinstance(v, float) and pd.isna(v)) else v)
                             for k, v in rec.items()

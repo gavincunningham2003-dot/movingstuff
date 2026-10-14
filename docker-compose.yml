@@ -41,9 +41,12 @@ services:
     environment:
       CATRIX_DATABASE_URL: postgresql+psycopg://catrix:catrix@db:5432/catrix
       CATRIX_DATA_DIR: /data
+      CATRIX_REGISTRY_FILE: /app/data_sources.yaml
+      CATRIX_JOB_RUNNER: worker  # the worker service runs portfolio jobs, not the API
       CATRIX_LOG_JSON: "true"
     volumes:
       - ./data:/data
+      - ./data_sources.yaml:/app/data_sources.yaml:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -59,9 +62,11 @@ services:
     environment:
       CATRIX_DATABASE_URL: postgresql+psycopg://catrix:catrix@db:5432/catrix
       CATRIX_DATA_DIR: /data
+      CATRIX_REGISTRY_FILE: /app/data_sources.yaml
       CATRIX_LOG_JSON: "true"
     volumes:
       - ./data:/data
+      - ./data_sources.yaml:/app/data_sources.yaml:ro
     depends_on:
       db:
         condition: service_healthy

@@ -78,5 +78,5 @@ def shap_for_rows(
             }
             for j, f in enumerate(feats)
         ]
-        rows.append(sorted(contribs, key=lambda c: -abs(c["contribution"])))
+        rows.append(sorted(contribs, key=lambda c: -abs(float(c["contribution"] or 0.0))))
     return rows, base

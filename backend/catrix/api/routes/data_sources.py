@@ -24,7 +24,7 @@ def list_data_sources(db: DB) -> list[DataSourceOut]:
                 last_ingested_at=row.retrieved_at if row else None,
                 record_count=row.record_count if row else None,
                 version=row.version if row else None,
-                ingestion_status=_status(s, row),  # type: ignore[arg-type]
+                ingestion_status=_status(s, row),
             )
         )
     return out

@@ -150,7 +150,12 @@ export function OperatingPointPanel({ model }: { model: ModelMetricsOut }) {
         <span>Flagged <span className="tabular text-slate-200">{fmtInt(flagged)}</span> ({fmtFracPct(current.flagged_share)})</span>
         <span>Positives caught <span className="tabular text-slate-200">{fmtInt(current.tp)} of {fmtInt(positives)}</span></span>
         <span>Precision <span className="tabular text-slate-200">{fmtFracPct(current.precision)}</span></span>
-        <span>Recall <span className="tabular text-slate-200">{fmtFracPct(current.recall)}</span></span>
+        <span>
+          Recall <span className="tabular text-slate-200">{fmtFracPct(current.recall)}</span>
+          {current.recall_ci95 && (
+            <span className="text-slate-500"> (95% CI {fmtFracPct(current.recall_ci95[0])}–{fmtFracPct(current.recall_ci95[1])})</span>
+          )}
+        </span>
         <span>
           Lift vs random{' '}
           <span className="tabular text-slate-200">
@@ -159,7 +164,10 @@ export function OperatingPointPanel({ model }: { model: ModelMetricsOut }) {
         </span>
       </div>
       <p className="mt-2 text-[11px] leading-snug text-slate-500">
-        All thresholds are chosen on the validation years and applied unchanged here. For a rare event, recall rises
+        {current.kind === 'ranking_budget'
+          ? 'Review budget: the riskiest share of THIS evaluation sample by model rank. It is a budget, not a transferable probability threshold. '
+          : 'Fixed threshold: a probability cut chosen on the validation years and applied unchanged to this sample. '}
+        For a rare event, recall rises
         only by flagging a larger share of locations; the lift column says how much better than random the flagged
         set is.
       </p>
