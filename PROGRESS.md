@@ -399,6 +399,72 @@ earlier runs (0.935-0.948 test ROC-AUC) benefited from selecting on test and fro
 vegetation maps. These are the numbers to quote. Predictions for all 14,994 addresses
 were regenerated from the live run.
 
+### Stage A — ML correctness, feature policy and portable artefacts (2026-10-14, branch `improve/catrix-risk-intelligence`)
+
+Scope: items 1-4 of the improvement prompt. Everything below was implemented, unit-tested
+and then exercised by a real retrain of both targets plus the modern-era experiment.
+
+**Chronological cross-validation (`catrix/ml/cv.py`).** Hyperparameters and the model
+family are now chosen by forward-chaining CV inside the training years (1995-2014), with a
+one-year gap between each training block and its validation block so that the T+1 target
+of a training row can never fall in a validation year. Candidate validation years are split
+into three contiguous blocks (2002-2006, 2007-2010, 2011-2014); a fold is skipped (and
+recorded as such) when it has fewer than 20 training or 5 validation positives, and training
+refuses to proceed if no fold is usable. The out-of-fold predictions feed calibration.
+
+**Calibration from out-of-fold predictions.** None / isotonic / sigmoid are fitted on the
+time-aware OOF predictions and the method is picked by Brier score on the 2015-2018
+validation years (ties favour "none"). The selected method is recorded per model with the
+reliability tables for all three. Thresholds are still read off validation; test and
+spatial holdout are reported only. `evaluation_caveats` in every metrics document states
+that the test period has been inspected repeatedly during development.
+
+**Feature policy (`dataset.py`).** Features are classified mandatory (fire history, terrain,
+buildings), optional (climate, drought, land cover) and experimental (LANDFIRE fuel columns,
+which only exist from LF2016). `--features default|all|mandatory` and `--min-coverage`
+select them; the decision for every feature (kind, coverage per split, included/excluded,
+reason) is stored as `feature_selection`, and `feature_availability` records coverage by
+split. A `modern` dataset spec (feature years 2016-2023, train 2016-2019 / val 2020-2021 /
+test 2022-2023) exists for the fuel-feature experiment. Lag columns are kept on prediction
+rows for the freshness report but excluded from the model.
+
+**Portable artefacts (`catrix/ml/artifacts.py`).** Metrics documents name joblib files
+relative to the run directory (`artifact_file`; legacy absolute `artifact_path` resolved by
+file name), and carry `feature_schema` (name, kind, dtype, coverage), `preprocessing_version`
+(`features-v2`), `training_config` (dataset, target, policy, seed, device, CV settings),
+`dependency_versions` and a deterministic `experiment_id`. Loading validates all of this and
+raises `ArtifactIncompatibleError` (wrong preprocessing version, missing schema/selected
+model, different scikit-learn/XGBoost major); a minor-version difference is a warning.
+`load_selected_model()` returns None with a logged reason instead of serving a broken model.
+
+**Prediction quality report.** `/properties/{id}` and `/hazards/point` now return
+`feature_completeness`, `missing_features`, `data_freshness` (feature year, climate year,
+land-cover epoch, fuel edition, fire history through), `coverage_warnings`, a
+`quality` label (complete ≥ 95 %, partial ≥ 70 %, sparse) and the top five SHAP factors
+with an explanation that this is a screening probability, not damage, claim, loss or
+premium. The property page renders this as a "Prediction inputs" block; the map popup
+shows "inputs complete (100 %)".
+
+**Retrain under the new protocol (real runs, RTX 4070, 2026-10-14 22:05-22:28):**
+
+| Run | Target | Folds used | Chronological-CV PR-AUC (selection) | Calibration | Test ROC / PR-AUC / Brier | Spatial ROC / PR-AUC | Riskiest 10 % budget (test) |
+|---|---|---|---|---|---|---|---|
+| `wf-chrono-202610142205` (live) | inside perimeter | 2 of 3 (2011-2014 fold skipped: < 5 validation positives) | **LR 0.0086**, XGB 0.0051, baseline 0.0044, RF 0.0037 | sigmoid (Brier 0.001451 vs isotonic 0.001452 vs none 0.0707) | 0.901 / 0.0064 / 0.0012 | 0.734 / 0.0080 | 45 of 80 positives, lift 5.6x, recall 95 % CI 45-67 % |
+| `wf-chrono-1km-202610142208` (recorded) | within 1 km | 3 of 3 | **LR 0.0219**, RF 0.0191, baseline 0.0179, XGB 0.0117 | isotonic | 0.806 / 0.0274 / 0.0092 | 0.719 / 0.0406 | 201 of 620, lift 3.2x, CI 29-36 % |
+| `wf-chrono-modern-202610142220` (experiment, `--features all`) | inside, 2016-2023 | — | — | — | **insufficient data**: 115 training and 9 test positives (needs 100 / 10) | — | — |
+
+Random forest scores higher on the test and spatial sets in the live run (0.918 / 0.844
+ROC-AUC) but is not selected: selection no longer looks at those sets, and RF's
+chronological-CV PR-AUC is below the baseline's. The fuel-feature experiment cannot be
+reported as a model with the current 14,994-address sample; the metrics document records
+the reason and the feature-selection decisions. Predictions for all 14,994 addresses were
+regenerated from the live run (`catrix ml predict`, 14,994 rows).
+
+Checks: `ruff check` / `ruff format --check` clean; `mypy catrix` clean (79 files);
+`pytest tests/unit -q` **85 passed** (233.9 s, GPU) after Stage A alone; frontend `tsc`
+clean.
+
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.
@@ -416,8 +482,11 @@ were regenerated from the live run.
   enrichment job, aggregation (county, 10 km concentration cells, top exposures,
   scenario totals), CSV/JSON export.
 - ML: location-year dataset (DuckDB), leakage checks, chronological + spatial-block
-  splits, baseline/LR/RF/XGBoost, validation-only tuning, isotonic calibration, test-set
-  metrics, curves, calibration table, geographic breakdown, SHAP, insufficient-data guard.
+  splits, baseline/LR/RF/XGBoost, chronological forward-chaining CV with a gap for tuning
+  and selection, OOF calibration (none/isotonic/sigmoid by validation Brier), feature
+  policy (mandatory/optional/experimental), portable self-describing artefacts with
+  validation on load, test-set metrics, operating points, calibration table, geographic
+  breakdown, SHAP, prediction-quality report, insufficient-data guard.
 - Data-quality checks and report persistence.
 - FastAPI v1 routes with OpenAPI, bbox guard rails, zoom-dependent simplification.
 - React/TypeScript dashboard (six pages) — written, not compiled.
@@ -436,6 +505,9 @@ Unit tests run without network (respx mocks) or database. Integration tests requ
 | 2026-10-13 | `python -m compileall catrix alembic tests` | OK |
 | 2026-10-13 | `pytest tests/integration -m integration` | not run (no database) |
 | 2026-10-13 | `mypy catrix` | not run |
+| 2026-10-14 | `pytest tests/unit -q` after Stage A (chronological CV, artefacts, feature policy) | **85 passed** (233.9 s, GPU) |
+| 2026-10-14 | `mypy catrix` (Stage A) | clean, 79 files |
+| 2026-10-14 | `npm run build` (Stage A) | succeeds |
 
 First run surfaced four failures, all fixed: a numpy `.astype("Int64")` call in the
 building matcher (code bug), and three test-data issues (synthetic ML table violated the

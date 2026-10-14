@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import numpy as np
@@ -115,7 +116,18 @@ WITHIN_1KM_SPEC = DatasetSpec(
     target="within_1km",
 )
 
-SPECS = {"inside": DEFAULT_SPEC, "within_1km": WITHIN_1KM_SPEC}
+MODERN_SPEC = DatasetSpec(
+    # Years with LANDFIRE editions: an experiment to see whether fuel/vegetation features
+    # help once they exist, at the cost of very few positives.
+    feature_years=(2016, 2023),
+    train_years=(2016, 2019),
+    val_years=(2020, 2021),
+    test_years=(2022, 2023),
+    version="wf-ly-modern-1.0",
+    target="inside",
+)
+
+SPECS = {"inside": DEFAULT_SPEC, "within_1km": WITHIN_1KM_SPEC, "modern": MODERN_SPEC}
 
 
 def collect_perimeter_neighbours(session: Session, batch: int = 500) -> pd.DataFrame:
@@ -282,10 +294,139 @@ def load_dataset(version: str = DATASET_VERSION) -> pd.DataFrame | None:
     return pd.read_parquet(p) if p.exists() else None
 
 
+# Explicit feature policy. "mandatory" features are always used (history + terrain);
+# "optional" features are used when their coverage meets the configured minimum;
+# "experimental" features (LANDFIRE fuels: editions exist only from 2016, so historical
+# coverage is thin) are used only when asked for. Nothing is imputed with zero: the
+# models' imputers (median for the linear/forest pipelines, native missing-value handling
+# for XGBoost) see NaN, and the saved feature schema records what was available.
+EXPERIMENTAL_FEATURES = [
+    "fbfm40",
+    "fuel_group",
+    "fuel_burnable",
+    "canopy_cover_pct",
+    "burnable_frac_500m",
+    "fuel_version_lag_years",
+]
+FEATURE_POLICY: dict[str, list[str]] = {
+    "mandatory": HISTORY_FEATURES + STATIC_FEATURES,
+    "optional": [c for c in OPTIONAL_FEATURES if c not in EXPERIMENTAL_FEATURES],
+    "experimental": EXPERIMENTAL_FEATURES,
+}
+
+
+def feature_kind(name: str) -> str:
+    for kind, names in FEATURE_POLICY.items():
+        if name in names:
+            return kind
+    return "unknown"
+
+
+def select_features(
+    df: pd.DataFrame, *, policy: str = "default", min_coverage: float = 0.5
+) -> dict[str, Any]:
+    """Apply the explicit policy and report every decision.
+
+    ``default``: mandatory + optional columns whose non-null coverage >= ``min_coverage``.
+    ``all``: additionally the experimental columns (same coverage rule).
+    ``mandatory``: history and terrain only.
+    """
+    if policy not in ("default", "all", "mandatory"):
+        raise ValueError(f"unknown feature policy {policy!r}")
+    features: list[str] = []
+    decisions: list[dict[str, Any]] = []
+    for c in FEATURE_POLICY["mandatory"]:
+        present = c in df.columns
+        decisions.append(
+            {
+                "feature": c,
+                "kind": "mandatory",
+                "included": present,
+                "reason": "mandatory" if present else "column absent",
+            }
+        )
+        if present:
+            features.append(c)
+    pools = ["optional"] + (["experimental"] if policy == "all" else [])
+    if policy == "mandatory":
+        pools = []
+    for kind in pools:
+        for c in FEATURE_POLICY[kind]:
+            if c not in df.columns:
+                decisions.append(
+                    {"feature": c, "kind": kind, "included": False, "reason": "column absent"}
+                )
+                continue
+            cov = float(df[c].notna().mean())
+            ok = cov >= min_coverage
+            decisions.append(
+                {
+                    "feature": c,
+                    "kind": kind,
+                    "included": ok,
+                    "coverage": cov,
+                    "reason": f"coverage {cov:.2f} {'>=' if ok else '<'} {min_coverage}",
+                }
+            )
+            if ok:
+                features.append(c)
+    for kind in ("optional", "experimental"):
+        if kind not in pools:
+            for c in FEATURE_POLICY[kind]:
+                decisions.append(
+                    {
+                        "feature": c,
+                        "kind": kind,
+                        "included": False,
+                        "reason": f"excluded by policy {policy!r}",
+                    }
+                )
+    return {
+        "policy": policy,
+        "min_coverage": min_coverage,
+        "features": features,
+        "decisions": decisions,
+    }
+
+
 def feature_columns(df: pd.DataFrame) -> list[str]:
-    cols = [c for c in HISTORY_FEATURES + STATIC_FEATURES if c in df.columns]
-    cols += [c for c in OPTIONAL_FEATURES if c in df.columns and df[c].notna().mean() > 0.5]
-    return cols
+    """Backwards-compatible default selection (policy 'default', 50 % coverage)."""
+    return select_features(df, policy="default", min_coverage=0.5)["features"]
+
+
+def feature_availability(df: pd.DataFrame) -> dict[str, Any]:
+    """Non-null coverage of every known feature by split and by feature year, so a reader
+    can see which sources existed when (e.g. fuels only from 2016, land cover from 2001)."""
+    known = [c for kind in FEATURE_POLICY.values() for c in kind if c in df.columns]
+    by_split: dict[str, dict[str, float]] = {}
+    if "split" in df.columns:
+        for s, g in df.groupby("split"):
+            by_split[str(s)] = {c: float(g[c].notna().mean()) for c in known}
+    by_year: dict[str, dict[str, float]] = {}
+    if "feature_year" in df.columns:
+        for y, g in df.groupby("feature_year"):
+            by_year[str(int(str(y)))] = {c: round(float(g[c].notna().mean()), 3) for c in known}
+    first_year = {}
+    for c in known:
+        yrs = (
+            df.loc[df[c].notna(), "feature_year"]
+            if "feature_year" in df.columns
+            else pd.Series(dtype=int)
+        )
+        first_year[c] = int(yrs.min()) if len(yrs) else None
+    return {"by_split": by_split, "by_year": by_year, "first_year_with_data": first_year}
+
+
+def feature_schema(df: pd.DataFrame, features: list[str]) -> list[dict[str, Any]]:
+    """The schema saved with every model: name, kind, dtype and coverage per split."""
+    out = []
+    for c in features:
+        cov = {}
+        if "split" in df.columns:
+            for s, g in df.groupby("split"):
+                cov[str(s)] = round(float(g[c].notna().mean()), 4)
+        out.append({"name": c, "kind": feature_kind(c), "dtype": str(df[c].dtype), "coverage": cov})
+    return out
 
 
 def leakage_checks(df: pd.DataFrame) -> list[str]:

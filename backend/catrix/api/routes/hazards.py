@@ -138,6 +138,13 @@ def assess_point(
             features=pr.get("features", {}) or {},
             shap=pr.get("shap", []) or [],
             caveats=pr.get("caveats", []) or [],
+            feature_completeness=pr.get("feature_completeness"),
+            missing_features=pr.get("missing_features", []) or [],
+            data_freshness=pr.get("data_freshness", {}) or {},
+            coverage_warnings=pr.get("coverage_warnings", []) or [],
+            quality=pr.get("quality"),
+            top_factors=pr.get("top_factors", []) or [],
+            explanation=pr.get("explanation"),
         )
         from catrix.hazards.base import HazardResult
 

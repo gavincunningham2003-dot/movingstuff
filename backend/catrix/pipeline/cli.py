@@ -305,7 +305,9 @@ def score() -> None:
 
 @ml_app.command("build-dataset")
 def ml_build_dataset(
-    target: str = typer.Option("inside", help="label definition: inside | within_1km"),
+    target: str = typer.Option(
+        "inside", help="label definition: inside | within_1km | modern (2016+ experiment)"
+    ),
 ) -> None:
     from catrix.db.session import session_scope
     from catrix.ml.dataset import SPECS, build_dataset
@@ -324,7 +326,9 @@ def ml_build_dataset(
 @ml_app.command("train")
 def ml_train(
     version: str | None = None,
-    target: str = typer.Option("inside", help="dataset target to train on: inside | within_1km"),
+    target: str = typer.Option(
+        "inside", help="dataset target to train on: inside | within_1km | modern"
+    ),
     no_lag_features: bool = typer.Option(
         False,
         "--no-lag-features",
@@ -332,6 +336,12 @@ def ml_train(
     ),
     no_select: bool = typer.Option(
         False, "--no-select", help="record the run without making it the model the API uses"
+    ),
+    features: str = typer.Option(
+        "default", help="feature policy: default (mandatory + covered optional) | all | mandatory"
+    ),
+    min_coverage: float = typer.Option(
+        0.5, help="minimum non-null coverage for an optional/experimental feature to be used"
     ),
 ) -> None:
     from catrix.db.session import session_scope
@@ -351,7 +361,14 @@ def ml_train(
     exclude = [c for c in df.columns if c.endswith("_version_lag_years")] if no_lag_features else []
     with session_scope() as s:
         doc = train_all(
-            df, spec, session=s, version=version, exclude_features=exclude, set_latest=not no_select
+            df,
+            spec,
+            session=s,
+            version=version,
+            exclude_features=exclude,
+            set_latest=not no_select,
+            feature_policy=features,
+            min_coverage=min_coverage,
         )
     typer.echo(
         f"status={doc['status']} selected={doc.get('selected_model')} version={doc.get('version')}"

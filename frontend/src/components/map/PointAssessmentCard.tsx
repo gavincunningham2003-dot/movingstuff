@@ -112,7 +112,17 @@ export function PointAssessmentCard({
       {p !== null && p !== undefined && (
         <div className="mt-2 flex items-baseline justify-between">
           <span className="text-slate-400">Fire perimeter exposure, next year</span>
-          <span className="tabular">{(p * 100).toFixed(2)}%</span>
+          <span className="tabular">
+            {(p * 100).toFixed(2)}%
+            {data.prediction?.quality && (
+              <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-500">
+                inputs {data.prediction.quality}
+                {data.prediction.feature_completeness !== null && data.prediction.feature_completeness !== undefined
+                  ? ` (${Math.round(data.prediction.feature_completeness * 100)}%)`
+                  : ''}
+              </span>
+            )}
+          </span>
         </div>
       )}
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">

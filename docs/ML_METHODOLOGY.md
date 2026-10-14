@@ -47,14 +47,29 @@ memorisation), any climate observation for year T+1.
 - **Spatial block holdout**: 15 % of 50 km EPSG:3310 grid blocks are removed from train
   and validation entirely and reported as `spatial_test`.
 - **Geographic breakdown**: test metrics by county (n ≥ 200).
-- **Hyper-parameters** (small grid per family) are chosen by grouped 3-fold
-  cross-validation *inside the training years* (folds are blocks of feature years), so no
-  later data touches tuning.
-- **Calibration and thresholds** use the validation years: isotonic regression is fitted
-  there, and every named operating point (F1-optimal, recall targets) is a probability
-  threshold read off the validation years and applied unchanged to the held-out splits.
-- **Model choice** is by validation PR-AUC. The test years and the spatial holdout are
-  reported only; changing their labels cannot change which model is selected.
+- **Hyper-parameters and the algorithm** are chosen by *chronological* (forward-chaining)
+  cross-validation inside the training years (`catrix/ml/cv.py`). Every fold trains on
+  years that strictly precede its validation block, with a one-year gap so the targets of
+  training rows (T+1) never coincide with validation feature years. With feature years
+  1995-2014 the folds are: train 1995-2000 → validate 2002-2006; train 1995-2004 →
+  2007-2010; train 1995-2008 → 2011-2014. Folds with fewer than 20 training or 5
+  validation positives are skipped and recorded; a candidate is never scored on its own
+  training rows as a fallback. The winning family is the one with the highest mean
+  PR-AUC over usable folds, and it must beat the historical-frequency baseline evaluated
+  on the same folds. Every fold's years, counts, positives and PR-AUC per candidate are
+  stored in `metrics.json` (`cv`).
+- **Calibration** is fitted on the *time-aware out-of-fold* predictions of the chosen
+  candidate (each validation block predicted by a model that never saw it), so the
+  calibrator is fitted on data the model was not fitted to. Uncalibrated, isotonic and
+  sigmoid (Platt) options are compared by Brier score on the validation years and the
+  best is kept; the Brier scores and reliability tables of all three are recorded.
+- **Thresholds** are read off the validation years. The validation years are therefore
+  used twice without refitting any model (calibration-method choice and thresholds); this
+  is stated in the metrics document.
+- **The test years and the spatial holdout are reported only.** Changing test labels
+  cannot change the selected model (unit-tested). The test period has been inspected
+  repeatedly during development, so its metrics are a final report on a fixed period, not
+  an untouched holdout; the document says so (`evaluation_caveats`).
 - **No future editions.** Periodic sources (LANDFIRE fuels, NLCD land cover) are matched
   to the latest edition with data year ≤ T. Years before the first available edition get
   missing values, never a later map: a vegetation map collected after year T reflects the
@@ -89,6 +104,26 @@ The dashboard distinguishes two kinds of operating point and labels them as such
 
 Every point reports counts, precision, recall with a 95 % Wilson interval, specificity,
 flagged share and lift over prevalence; a flagged-share sweep (0.1 %–50 %) backs the slider.
+
+## Feature policy, schema and portability
+
+Features are grouped explicitly (`FEATURE_POLICY` in `catrix/ml/dataset.py`): *mandatory*
+(fire history and terrain), *optional* (PRISM climate, Drought Monitor, NLCD land cover)
+and *experimental* (LANDFIRE fuels, which exist only from 2016). `catrix ml train
+--features default|all|mandatory --min-coverage 0.5` makes the choice visible; every
+decision, the coverage of every feature by split and by year, and the resulting schema
+are saved with the run. Missing values are never replaced by zero: the linear and forest
+pipelines impute the median, XGBoost handles missing values natively, and the saved
+schema records what was available. A trained run is a portable directory
+(`data/models/<version>/`, see `catrix/ml/artifacts.py`): artefacts are referenced by file
+name, and the preprocessing version, training configuration, seed, dependency versions,
+dataset version and experiment id are stored next to them. Loading validates all of this
+and refuses an incompatible artefact rather than predicting with it.
+
+Every prediction carries a structured input-quality report: feature completeness (share
+of schema features with a value; availability, not confidence), the missing features, the
+edition years actually used (climate year, land-cover epoch, fuel edition, fire history
+through), coverage warnings and the top contributing factors.
 
 ## Prediction-time features for new locations
 

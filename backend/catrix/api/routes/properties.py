@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pandas as pd
@@ -229,6 +230,12 @@ def _prediction_out(db: DB, address_id: int) -> WildfirePredictionOut | None:
         return None
     pred, mv = row
     thr = float((mv.metrics or {}).get("threshold", 0.5))
+    from catrix.ml.predict import prediction_quality
+
+    stored_feats = pred.features or {}
+    shap_rows = (pred.shap_values or {}).get("contributions", [])
+    fy = int(pred.prediction_year) - 1 if pred.prediction_year else datetime.now(UTC).year - 1
+    quality = prediction_quality(stored_feats, list(mv.feature_list or []), fy, shap_rows)
     return WildfirePredictionOut(
         model_version=mv.version,
         target_definition=mv.target_definition,
@@ -238,7 +245,14 @@ def _prediction_out(db: DB, address_id: int) -> WildfirePredictionOut | None:
         predicted_class=pred.probability >= thr,
         base_value=pred.base_value,
         features=pred.features or {},
-        shap=(pred.shap_values or {}).get("contributions", []),
+        shap=shap_rows,
+        feature_completeness=quality["feature_completeness"],
+        missing_features=quality["missing_features"],
+        data_freshness=quality["data_freshness"],
+        coverage_warnings=quality["coverage_warnings"],
+        quality=quality["quality"],
+        top_factors=quality["top_factors"],
+        explanation=quality["explanation"],
         caveats=[
             *(
                 [

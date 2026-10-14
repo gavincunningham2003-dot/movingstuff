@@ -1,19 +1,34 @@
 """Training: historical-frequency baseline, logistic regression, random forest, XGBoost.
 
-* Hyper-parameters are tuned on the validation years only (small grid; Optuna optional).
-* Class imbalance is handled with class weights / ``scale_pos_weight`` — no synthetic
-  oversampling, because rows are spatially and temporally dependent.
-* Probabilities are post-hoc calibrated (isotonic) on the validation set; test years are
-  untouched until the final evaluation.
-* Every artefact is written with joblib under ``data/models/<version>/`` and summarised in
-  ``metrics.json``; a ``ModelVersion`` row is created when a session is supplied.
+Protocol (see docs/ML_METHODOLOGY.md):
+
+1. **Tuning and algorithm choice** use chronological (forward-chaining) cross-validation
+   *inside the training years* (:mod:`catrix.ml.cv`): every fold trains on years that
+   strictly precede its validation block, with a gap so training targets (T+1) never
+   coincide with validation feature years. The best parameters per family and the winning
+   family are chosen by mean PR-AUC over usable folds. The baseline goes through the same
+   folds and the winner must beat it there.
+2. **Calibration** is fitted on the time-aware out-of-fold predictions of the chosen
+   candidate (predictions for each validation block come from a model that never saw it),
+   i.e. on data the calibrated model was not fitted to. Three options are compared on the
+   *validation years* by Brier score: uncalibrated, isotonic, sigmoid (Platt).
+3. **Operating thresholds** are read off the validation years.
+4. **The test years and the spatial holdout are reported only.** They never influence
+   tuning, selection, calibration or thresholds. Note that the test period has been
+   inspected repeatedly during development; the metrics document says so.
+
+Class imbalance is handled with class weights / ``scale_pos_weight`` only: rows are
+spatially and temporally dependent, so synthetic oversampling would leak.
+
+Every run is written as a portable directory ``data/models/<version>/`` (see
+:mod:`catrix.ml.artifacts`).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +41,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy.orm import Session
@@ -33,10 +49,24 @@ from sqlalchemy.orm import Session
 from catrix.config import get_settings
 from catrix.db.models import ModelVersion
 from catrix.logging import get_logger
-from catrix.ml.dataset import DEFAULT_SPEC, DatasetSpec, feature_columns, leakage_checks
+from catrix.ml.artifacts import (
+    PREPROCESSING_VERSION,
+    dependency_versions,
+    experiment_id,
+)
+from catrix.ml.cv import ChronologicalCVError, chronological_cv, chronological_folds
+from catrix.ml.dataset import (
+    DEFAULT_SPEC,
+    DatasetSpec,
+    feature_availability,
+    feature_schema,
+    leakage_checks,
+    select_features,
+)
 from catrix.ml.evaluate import (
     OPERATING_POINT_LABELS,
     SHARE_POINTS,
+    calibration_table,
     choose_threshold,
     confusion_at,
     confusion_top_share,
@@ -66,6 +96,16 @@ TARGET_DEFINITIONS = {
 }
 MIN_POSITIVES = 100
 
+EVALUATION_CAVEATS = [
+    "The test years have been inspected repeatedly during development (multiple training runs "
+    "on 2026-10-13 and 2026-10-14); treat test metrics as a final report on a fixed period, "
+    "not as a never-seen holdout.",
+    "Validation years are used twice without refitting any model: to choose the calibration "
+    "method by Brier score and to read off operating thresholds.",
+    "Location-years are spatially and temporally dependent; the spatial-block holdout is the "
+    "better guide to performance in regions the model has not seen.",
+]
+
 
 class HistoricalFrequencyBaseline(BaseEstimator, ClassifierMixin):
     """P(fire next year) = smoothed historical annual rate of perimeter exposure within
@@ -75,8 +115,6 @@ class HistoricalFrequencyBaseline(BaseEstimator, ClassifierMixin):
         self.classes_ = np.array([0, 1])
         self.prior_ = float(np.mean(y))
         rate = X["n_perim_5km_10y"].to_numpy(float) / 10.0
-        # Map rate → probability with a monotone logistic-like squash fitted by a 1-D
-        # isotonic regression (keeps it a proper baseline, not a tuned model).
         self.iso_ = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(rate, y)
         return self
 
@@ -89,14 +127,34 @@ class HistoricalFrequencyBaseline(BaseEstimator, ClassifierMixin):
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
+class SigmoidCalibrator:
+    """Platt scaling: logistic regression on the logit of the raw probability."""
+
+    def __init__(self) -> None:
+        self.lr_ = LogisticRegression(C=1e6, max_iter=1000)
+
+    @staticmethod
+    def _logit(p: np.ndarray) -> np.ndarray:
+        p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+        return np.log(p / (1 - p)).reshape(-1, 1)
+
+    def fit(self, p: np.ndarray, y: np.ndarray) -> SigmoidCalibrator:
+        self.lr_.fit(self._logit(p), np.asarray(y).astype(int))
+        return self
+
+    def predict(self, p: np.ndarray) -> np.ndarray:
+        return self.lr_.predict_proba(self._logit(p))[:, 1]
+
+
 @dataclass
 class TrainedModel:
     name: str
     algorithm: str
     estimator: Any
-    calibrator: IsotonicRegression | None
+    calibrator: Any | None
     threshold: float
     params: dict[str, Any]
+    calibration_method: str = "none"
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         p = self.estimator.predict_proba(X)[:, 1]
@@ -105,33 +163,17 @@ class TrainedModel:
         return np.clip(p, 0.0, 1.0)
 
     def raw_scores(self, X: pd.DataFrame) -> np.ndarray:
-        """Uncalibrated scores, for ranking (the calibrated probabilities are tied in steps)."""
+        """Uncalibrated scores, for ranking (calibrated probabilities are tied in steps)."""
         return np.asarray(self.estimator.predict_proba(X)[:, 1], dtype=float)
 
 
-def _cv_average_precision(
-    est: Any, X: pd.DataFrame, y: np.ndarray, groups: np.ndarray, n_splits: int = 3
-) -> float:
-    """Mean average precision over GroupKFold folds (groups = feature years), fitting a
-    clone of ``est`` per fold. Falls back to a single fit/score when there are too few
-    groups or a fold has no positives."""
-    from sklearn.base import clone
-    from sklearn.metrics import average_precision_score
-    from sklearn.model_selection import GroupKFold
-
-    n_groups = len(np.unique(groups))
-    if n_groups < n_splits or y.sum() < n_splits:
-        est.fit(X, y)
-        return float(average_precision_score(y, est.predict_proba(X)[:, 1])) if y.sum() else 0.0
-    scores = []
-    for tr_idx, te_idx in GroupKFold(n_splits=n_splits).split(X, y, groups):
-        if y[te_idx].sum() == 0 or y[tr_idx].sum() == 0:
-            continue
-        m = clone(est).fit(X.iloc[tr_idx], y[tr_idx])
-        scores.append(
-            float(average_precision_score(y[te_idx], m.predict_proba(X.iloc[te_idx])[:, 1]))
-        )
-    return float(np.mean(scores)) if scores else 0.0
+@dataclass(frozen=True)
+class CVConfig:
+    n_folds: int = 3
+    gap_years: int = 1
+    min_train_years: int = 6
+    min_pos_val: int = 5
+    min_pos_train: int = 20
 
 
 def _pos_weight(y: np.ndarray) -> float:
@@ -142,7 +184,7 @@ def _pos_weight(y: np.ndarray) -> float:
 def _candidates(
     seed: int, pos_weight: float, device: str = "cpu"
 ) -> dict[str, list[tuple[str, Any, dict[str, Any]]]]:
-    """Model name → list of (algorithm, estimator, params) to try on validation."""
+    """Model family -> list of (algorithm, estimator, params) to try."""
     from xgboost import XGBClassifier
 
     lr = [
@@ -213,6 +255,90 @@ def _candidates(
     return {"logistic_regression": lr, "random_forest": rf, "xgboost": xgb}
 
 
+def _choose_calibration(
+    oof_p: np.ndarray, oof_y: np.ndarray, raw_val: np.ndarray, yva: np.ndarray
+) -> tuple[str, Any | None, dict[str, Any]]:
+    """Fit isotonic and sigmoid calibrators on time-aware out-of-fold predictions and
+    pick the method with the lowest Brier score on the validation years (uncalibrated is
+    a candidate too). Returns (method, calibrator, report)."""
+    options: dict[str, Any | None] = {"none": None}
+    if len(oof_p) >= 50 and oof_y.sum() >= 5:
+        options["isotonic"] = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(
+            oof_p, oof_y
+        )
+        try:
+            options["sigmoid"] = SigmoidCalibrator().fit(oof_p, oof_y)
+        except Exception as exc:  # pragma: no cover - degenerate inputs
+            log.warning("sigmoid_calibration_failed", error=repr(exc))
+    report: dict[str, Any] = {
+        "fitted_on": f"{len(oof_p)} out-of-fold rows ({int(oof_y.sum())} positives)"
+    }
+    scores: dict[str, float] = {}
+    tables: dict[str, Any] = {}
+    for name, cal in options.items():
+        p = raw_val if cal is None else np.clip(cal.predict(raw_val), 0, 1)
+        scores[name] = float(brier_score_loss(yva, p))
+        tables[name] = calibration_table(yva, p)
+    best = min(scores, key=lambda k: scores[k])
+    report["brier_validation"] = scores
+    report["reliability_validation"] = tables
+    report["selected"] = best
+    report["rule"] = "lowest Brier score on the validation years; ties favour 'none'"
+    return best, options[best], report
+
+
+def _fit_family(
+    family: str,
+    cands: list[tuple[str, Any, dict[str, Any]]],
+    Xtr: pd.DataFrame,
+    ytr: np.ndarray,
+    years_tr: np.ndarray,
+    folds: list,
+    cfg: CVConfig,
+) -> tuple[TrainedModel, dict[str, Any], dict[str, Any]] | None:
+    """Tune one family by chronological CV; return the best (unfitted) model, its CV
+    result and the per-candidate records. None if no candidate has a usable fold."""
+    records: list[dict[str, Any]] = []
+    best: tuple[float, TrainedModel, dict[str, Any]] | None = None
+    for algo, est, params in cands:
+        try:
+            cv = chronological_cv(
+                est,
+                Xtr,
+                ytr,
+                years_tr,
+                folds,
+                min_pos_val=cfg.min_pos_val,
+                min_pos_train=cfg.min_pos_train,
+            )
+        except ChronologicalCVError as exc:
+            records.append(
+                {"family": family, "params": params, "status": "no usable fold", "detail": str(exc)}
+            )
+            log.warning("candidate_unusable", family=family, params=params, error=str(exc))
+            continue
+        records.append(
+            {
+                "family": family,
+                "params": params,
+                "status": "scored",
+                "cv_pr_auc": cv["mean_pr_auc"],
+                "folds": [{k: v for k, v in f.items() if k != "gap_years"} for f in cv["folds"]],
+            }
+        )
+        log.info(
+            "candidate_evaluated",
+            family=family,
+            params=params,
+            cv_pr_auc=round(cv["mean_pr_auc"], 4),
+        )
+        if best is None or cv["mean_pr_auc"] > best[0]:
+            best = (cv["mean_pr_auc"], TrainedModel(family, algo, est, None, 0.5, params), cv)
+    if best is None:
+        return None
+    return best[1], best[2], {"candidates": records}
+
+
 def train_all(
     df: pd.DataFrame,
     spec: DatasetSpec = DEFAULT_SPEC,
@@ -221,35 +347,56 @@ def train_all(
     version: str | None = None,
     exclude_features: Iterable[str] | None = None,
     set_latest: bool = True,
+    feature_policy: str = "default",
+    min_coverage: float = 0.5,
+    cv_config: CVConfig | None = None,
 ) -> dict[str, Any]:
-    """Train, select and evaluate. Returns the metrics document (also written to disk).
+    """Train, select, calibrate and evaluate. Returns the metrics document (also written
+    to disk as a portable run directory).
 
-    ``exclude_features`` drops columns from the feature set (e.g. the ``*_version_lag_years``
-    anachronism flags, which double as a calendar-year proxy). ``set_latest=False`` records
-    the run without making it the model the API and ``catrix ml predict`` use."""
+    ``feature_policy``: ``default`` (mandatory + optional features that meet
+    ``min_coverage``), ``all`` (also experimental features), ``mandatory`` (history and
+    terrain only). ``exclude_features`` removes named columns on top of the policy.
+    ``set_latest=False`` records the run without making it the live model."""
     settings = get_settings()
     seed = settings.random_seed
     np.random.seed(seed)
+    cfg = cv_config or CVConfig()
     problems = leakage_checks(df)
     if problems:
         raise ValueError(f"leakage checks failed: {problems}")
     excluded = sorted(set(exclude_features or ()))
-    feats = [f for f in feature_columns(df) if f not in excluded]
+    selection = select_features(df, policy=feature_policy, min_coverage=min_coverage)
+    feats = [f for f in selection["features"] if f not in excluded]
     train, val, test, stest = (
         df[df["split"] == s] for s in ("train", "val", "test", "spatial_test")
     )
     n_pos_train = int(train["label"].sum())
+    target = getattr(spec, "target", "inside")
+    training_config = {
+        "dataset": {**asdict(spec)},
+        "target": target,
+        "feature_policy": feature_policy,
+        "min_coverage": min_coverage,
+        "excluded_features": excluded,
+        "features": feats,
+        "seed": seed,
+        "ml_device": settings.ml_device,
+        "cv": asdict(cfg),
+        "preprocessing_version": PREPROCESSING_VERSION,
+    }
     doc: dict[str, Any] = {
         "dataset_version": spec.version,
         "feature_list": feats,
-        "target_definition": TARGET_DEFINITIONS.get(
-            getattr(spec, "target", "inside"), TARGET_DEFINITION
-        ),
-        "target": getattr(spec, "target", "inside"),
+        "feature_schema": feature_schema(df, feats),
+        "feature_availability": feature_availability(df),
+        "feature_selection": {k: v for k, v in selection.items() if k != "features"},
+        "target_definition": TARGET_DEFINITIONS.get(target, TARGET_DEFINITION),
+        "target": target,
         "excluded_features": excluded,
-        "train_period": f"{spec.train_years[0]}-{spec.train_years[1]} (targets {spec.train_years[0]+1}-{spec.train_years[1]+1})",
-        "validation_period": f"{spec.val_years[0]}-{spec.val_years[1]} (targets {spec.val_years[0]+1}-{spec.val_years[1]+1})",
-        "test_period": f"{spec.test_years[0]}-{spec.test_years[1]} (targets {spec.test_years[0]+1}-{spec.test_years[1]+1})",
+        "train_period": f"{spec.train_years[0]}-{spec.train_years[1]} (targets {spec.train_years[0] + 1}-{spec.train_years[1] + 1})",
+        "validation_period": f"{spec.val_years[0]}-{spec.val_years[1]} (targets {spec.val_years[0] + 1}-{spec.val_years[1] + 1})",
+        "test_period": f"{spec.test_years[0]}-{spec.test_years[1]} (targets {spec.test_years[0] + 1}-{spec.test_years[1] + 1})",
         "spatial_holdout": f"{len(df.attrs.get('holdout_blocks', []))} x 50 km blocks held out of train/val ({len(stest)} rows)",
         "n_train": int(len(train)),
         "n_val": int(len(val)),
@@ -260,27 +407,61 @@ def train_all(
         "trained_at": datetime.now(UTC).isoformat(),
         "models": [],
         "status": "available",
-        # Share of rows with a non-null value for each optional (climate/drought/fuel/
-        # land-cover) feature, so readers can see which sources actually contributed.
         "optional_feature_coverage": describe_optional(df),
+        "training_config": training_config,
+        "experiment_id": experiment_id({**training_config, "dataset_version": spec.version}),
+        "preprocessing_version": PREPROCESSING_VERSION,
+        "dependency_versions": dependency_versions(),
+        "evaluation_caveats": EVALUATION_CAVEATS,
     }
+    ver = version or f"wf-{datetime.now(UTC):%Y%m%d%H%M}"
     if n_pos_train < MIN_POSITIVES or len(test) == 0 or test["label"].sum() < 10:
         doc["status"] = "insufficient_data"
         doc["status_detail"] = (
-            f"Only {n_pos_train} positive location-years in the training period and {int(test['label'].sum()) if len(test) else 0} in the test period. "
-            f"CATRIX requires at least {MIN_POSITIVES} training positives and 10 test positives before reporting a supervised model. "
-            "Increase the address sample, extend the feature-year range, or sample more fire-prone counties."
+            f"Only {n_pos_train} positive location-years in the training period and "
+            f"{int(test['label'].sum()) if len(test) else 0} in the test period. CATRIX requires at "
+            f"least {MIN_POSITIVES} training positives and 10 test positives before reporting a "
+            "supervised model. Increase the address sample, extend the feature-year range, or "
+            "sample more fire-prone counties."
         )
-        _write_metrics(doc, version or f"wf-{datetime.now(UTC):%Y%m%d%H%M}", set_latest=set_latest)
+        doc["version"] = ver
+        _write_metrics(doc, ver, set_latest=set_latest)
         return doc
 
     Xtr, ytr = train[feats], train["label"].to_numpy()
     Xva, yva = val[feats], val["label"].to_numpy()
     Xte, yte = test[feats], test["label"].to_numpy()
+    years_tr = train["feature_year"].to_numpy()
+    try:
+        folds = chronological_folds(
+            years_tr,
+            n_folds=cfg.n_folds,
+            gap_years=cfg.gap_years,
+            min_train_years=cfg.min_train_years,
+        )
+    except ChronologicalCVError:
+        # Short training periods (e.g. the modern-era experiment): fewer, smaller folds.
+        folds = chronological_folds(years_tr, n_folds=2, gap_years=cfg.gap_years, min_train_years=2)
+    doc["cv_folds"] = [asdict(f) for f in folds]
     pos_w = _pos_weight(ytr)
     results: list[tuple[TrainedModel, dict[str, Any]]] = []
 
-    # Baseline (no tuning, no calibration beyond its own isotonic fit) --------------------
+    # Baseline through the same folds (for the comparison) --------------------------------
+    base_est = HistoricalFrequencyBaseline()
+    try:
+        base_cv = chronological_cv(
+            base_est,
+            Xtr,
+            ytr,
+            years_tr,
+            folds,
+            min_pos_val=cfg.min_pos_val,
+            min_pos_train=cfg.min_pos_train,
+        )
+        base_cv_ap: float | None = base_cv["mean_pr_auc"]
+        base_folds = base_cv["folds"]
+    except ChronologicalCVError as exc:
+        base_cv_ap, base_folds = None, [{"status": "no usable fold", "detail": str(exc)}]
     base = HistoricalFrequencyBaseline().fit(Xtr, ytr)
     tm = TrainedModel(
         "historical_frequency_baseline",
@@ -290,60 +471,67 @@ def train_all(
         choose_threshold(yva, base.predict_proba(Xva)[:, 1]),
         {},
     )
-    results.append((tm, _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)))
+    d = _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)
+    d["cv"] = {"mean_pr_auc": base_cv_ap, "folds": base_folds}
+    results.append((tm, d))
 
-    # Candidates: pick the best params per family by PR-AUC under grouped cross-validation
-    # INSIDE the training years (folds = blocks of feature years), so the validation years
-    # are reserved for calibration and thresholds and the test years for reporting only.
-    tune_groups = train["feature_year"].to_numpy()
+    # Candidates: tuned and compared by chronological CV in the training years ------------
+    cv_report: dict[str, Any] = {"config": asdict(cfg), "folds": doc["cv_folds"], "families": {}}
+    family_cv: dict[str, float] = {}
     for family, cands in _candidates(seed, pos_w, settings.ml_device).items():
-        best: tuple[float, TrainedModel] | None = None
-        for algo, est, params in cands:
-            ap = _cv_average_precision(est, Xtr, ytr, tune_groups)
-            log.info("candidate_evaluated", family=family, params=params, cv_pr_auc=round(ap, 4))
-            if best is None or ap > best[0]:
-                best = (ap, TrainedModel(family, algo, est, None, 0.5, params))
-        assert best is not None
-        tm = best[1]
+        fitted = _fit_family(family, cands, Xtr, ytr, years_tr, folds, cfg)
+        if fitted is None:
+            cv_report["families"][family] = {"status": "no usable fold"}
+            continue
+        tm, cv, cand_rec = fitted
+        cv_report["families"][family] = {
+            "best_params": tm.params,
+            "cv_pr_auc": cv["mean_pr_auc"],
+            **cand_rec,
+        }
+        family_cv[family] = cv["mean_pr_auc"]
         tm.estimator.fit(Xtr, ytr)
-        # Calibrate on validation, then choose the threshold on calibrated val probabilities.
-        raw_val = tm.estimator.predict_proba(Xva)[:, 1]
-        tm.calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(
-            raw_val, yva
-        )
+        raw_val = tm.raw_scores(Xva)
+        method, cal, cal_report = _choose_calibration(cv["oof_p"], cv["oof_y"], raw_val, yva)
+        tm.calibrator, tm.calibration_method = cal, method
         tm.threshold = choose_threshold(yva, tm.predict_proba(Xva))
-        results.append((tm, _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)))
+        d = _evaluate_model(tm, Xva, yva, Xte, yte, test, stest, feats)
+        d["cv"] = {"mean_pr_auc": cv["mean_pr_auc"], "folds": cv["folds"]}
+        d["calibration"] = {"method": method, **cal_report}
+        results.append((tm, d))
+    doc["cv"] = cv_report
 
-    # Selection: best VALIDATION PR-AUC among learned models, provided it beats the
-    # baseline on validation. The test years play no part in choosing the model.
-    base_doc = results[0][1]
-    cand = [(m, d) for m, d in results[1:] if d["validation"]["metrics"]["pr_auc"] is not None]
-    selected = (
-        max(cand, key=lambda md: md[1]["validation"]["metrics"]["pr_auc"]) if cand else results[0]
-    )
-    if (
-        base_doc["validation"]["metrics"]["pr_auc"] is not None
-        and selected[1]["validation"]["metrics"]["pr_auc"]
-        <= base_doc["validation"]["metrics"]["pr_auc"]
-    ):
-        doc["status_detail"] = (
-            "No learned model beat the historical-frequency baseline on validation PR-AUC; "
-            "the baseline is reported as selected."
-        )
-        selected = results[0]
+    # Selection: best family by chronological-CV PR-AUC; must beat the baseline on the
+    # same folds. Validation years choose calibration method + thresholds only; the test
+    # years and the spatial holdout are reported only.
+    selected = results[0]
+    if family_cv:
+        best_family = max(family_cv, key=lambda k: family_cv[k])
+        cand = next((md for md in results[1:] if md[0].name == best_family), None)
+        if cand is not None and (base_cv_ap is None or family_cv[best_family] > base_cv_ap):
+            selected = cand
+        else:
+            doc["status_detail"] = (
+                "No learned model beat the historical-frequency baseline under chronological "
+                "cross-validation; the baseline is reported as selected."
+            )
     doc["selection"] = {
-        "hyperparameters": "grouped 3-fold CV by feature year within the training years (PR-AUC)",
-        "calibration": "isotonic regression fitted on the validation years",
+        "hyperparameters": "chronological (forward-chaining) CV inside the training years, mean PR-AUC",
+        "algorithm": "family with the highest chronological-CV PR-AUC, if it beats the baseline on the same folds",
+        "calibration": "fitted on time-aware out-of-fold predictions; method chosen by Brier score on the validation years",
         "thresholds": "chosen on the validation years",
-        "model_choice": "validation PR-AUC; the test years and the spatial holdout are reported only",
+        "test_and_spatial_holdout": "reported only",
+        "cv_pr_auc_by_family": family_cv,
+        "baseline_cv_pr_auc": base_cv_ap,
     }
-    ver = version or f"wf-{datetime.now(UTC):%Y%m%d%H%M}"
     out_dir = settings.models_dir / ver
     out_dir.mkdir(parents=True, exist_ok=True)
     for m, d in results:
         d["is_selected"] = m is selected[0]
-        d["artifact_path"] = str(out_dir / f"{m.name}.joblib")
-        joblib.dump(m, d["artifact_path"])
+        d["artifact_file"] = f"{m.name}.joblib"
+        d["artifact_path"] = f"{ver}/{m.name}.joblib"  # relative to the models directory
+        d["calibration_method"] = m.calibration_method
+        joblib.dump(m, out_dir / d["artifact_file"])
         doc["models"].append(d)
     doc["selected_model"] = selected[0].name
     doc["version"] = ver
@@ -380,10 +568,6 @@ def _evaluate_model(
     ps = tm.predict_proba(stest[feats]) if has_spatial else np.array([], dtype=float)
     if has_spatial:
         d["spatial_test"] = evaluate(ys, ps, tm.threshold)
-    # Alternative operating points (all chosen on validation) and a flagged-share sweep so
-    # the dashboard can show the confusion matrix at any threshold.
-    # Raw (uncalibrated) scores rank rows with far fewer ties than the isotonic
-    # probabilities, so share-based points flag exactly the share they promise.
     r_va, r_te = tm.raw_scores(Xva), tm.raw_scores(Xte)
     r_s = tm.raw_scores(stest[feats]) if has_spatial else np.array([], dtype=float)
     ops = operating_points(yva, p_va)

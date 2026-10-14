@@ -249,12 +249,73 @@ function PredictionCard({ detail }: { detail: PropertyDetailOut }) {
         </details>
       )}
 
+      <PredictionQuality p={p} />
+
       {p.caveats.length > 0 && (
         <CaveatBanner title="Model caveats" className="mt-4">
           <CaveatList items={p.caveats} />
         </CaveatBanner>
       )}
     </Card>
+  );
+}
+
+function PredictionQuality({ p }: { p: NonNullable<PropertyDetailOut['prediction']> }) {
+  const completeness = p.feature_completeness ?? null;
+  const tone = p.quality === 'complete' ? 'teal' : p.quality === 'partial' ? 'amber' : p.quality === 'sparse' ? 'red' : 'neutral';
+  const fresh = p.data_freshness ?? {};
+  const freshItems: KeyValue[] = [
+    { key: 'fy', label: 'Fire history through', value: fresh.fire_history_through ?? '—' },
+    { key: 'cy', label: 'Climate year', value: fresh.climate_year ?? '—' },
+    { key: 'lc', label: 'Land cover epoch', value: fresh.land_cover_epoch ?? '—' },
+    { key: 'fu', label: 'Fuel edition', value: fresh.fuel_edition_year ?? '—' },
+  ];
+  return (
+    <div className="mt-4 rounded-md border border-slate-700 bg-slate-800/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Prediction inputs</div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-400">Feature completeness</span>
+          <span className="tabular text-slate-100">{completeness === null ? '—' : fmtFracPct(completeness)}</span>
+          <Badge tone={tone}>{p.quality ?? 'unknown'}</Badge>
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">Data freshness</div>
+          <KeyValueList items={freshItems} columns={2} className="mt-1" />
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">Top contributing factors</div>
+          {p.top_factors && p.top_factors.length > 0 ? (
+            <ul className="mt-1 space-y-0.5 text-xs">
+              {p.top_factors.map((f) => (
+                <li key={f.feature} className="flex justify-between gap-2">
+                  <span className="text-slate-300">{humanize(f.feature)}</span>
+                  <span className={`tabular ${f.contribution > 0 ? 'text-red-300' : 'text-teal-300'}`}>
+                    {f.contribution > 0 ? '+' : ''}
+                    {fmtNum(f.contribution, 3)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="mt-1 text-xs text-slate-500">No per-feature contributions for this model.</div>
+          )}
+        </div>
+      </div>
+      {p.coverage_warnings && p.coverage_warnings.length > 0 && (
+        <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-amber-300">
+          {p.coverage_warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
+      {p.missing_features && p.missing_features.length > 0 && (
+        <div className="mt-1 text-[11px] text-slate-500">Missing: {p.missing_features.map(humanize).join(', ')}</div>
+      )}
+      {p.explanation && <p className="mt-2 text-[11px] leading-snug text-slate-500">{p.explanation}</p>}
+    </div>
   );
 }
 

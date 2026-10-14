@@ -182,6 +182,20 @@ class WildfirePredictionOut(BaseModel):
     features: dict[str, float | None] = Field(default_factory=dict)
     shap: list[dict[str, Any]] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
+    # Structured input-quality assessment (availability, not statistical confidence).
+    feature_completeness: float | None = Field(
+        default=None,
+        description="Share of the model's features that had a value for this location.",
+    )
+    missing_features: list[str] = Field(default_factory=list)
+    data_freshness: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Edition/observation years actually used (feature_year, climate_year, land_cover_epoch, fuel_edition_year, fire_history_through).",
+    )
+    coverage_warnings: list[str] = Field(default_factory=list)
+    quality: Literal["complete", "partial", "sparse"] | None = None
+    top_factors: list[dict[str, Any]] = Field(default_factory=list)
+    explanation: str | None = None
 
 
 class PropertySummaryOut(BaseModel):

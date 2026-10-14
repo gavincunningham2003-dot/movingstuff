@@ -183,6 +183,14 @@ export interface WildfirePredictionOut {
   features: Record<string, number | null>;
   shap: ShapEntry[];
   caveats: string[];
+  /** Share of the model's features that had a value; input availability, not confidence. */
+  feature_completeness?: number | null;
+  missing_features?: string[];
+  data_freshness?: Record<string, number | null>;
+  coverage_warnings?: string[];
+  quality?: 'complete' | 'partial' | 'sparse' | null;
+  top_factors?: { feature: string; contribution: number; value?: number | null }[];
+  explanation?: string | null;
 }
 
 export interface PropertySummaryOut {
