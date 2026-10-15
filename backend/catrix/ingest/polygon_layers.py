@@ -55,6 +55,9 @@ LAYERS: dict[str, PolygonLayerSpec] = {
         hazard_id="tsunami",
         fields=["OBJECTID", "Evacuate", "County", "Label"],
         class_field="Evacuate",
+        # The service also serves county-wide "No, Outside Hazard Area" polygons; storing
+        # them made every point inside them look exposed. Keep only the hazard area.
+        where="Evacuate LIKE 'Yes%'",
     ),
     "flood_nfhl": PolygonLayerSpec(
         source_id="fema_nfhl",

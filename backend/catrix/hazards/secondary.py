@@ -191,6 +191,23 @@ class LiquefactionModule(HazardModule):
         return out
 
 
+# Prefer a "Yes" polygon when a point sits in overlapping CGS polygons.
+_TSUNAMI_PRIORITY = (
+    "(CASE WHEN h.classification ILIKE 'yes%' THEN 0 ELSE 1 END), class_code DESC NULLS LAST"
+)
+
+
+def tsunami_polygon_is_hazard(hit: dict[str, Any]) -> bool:
+    """True only for CGS polygons whose ``Evacuate`` / classification says the location is
+    inside the tsunami hazard area ("Yes, Tsunami Hazard Area")."""
+    label = (
+        str((hit.get("attributes") or {}).get("Evacuate") or hit.get("classification") or "")
+        .strip()
+        .lower()
+    )
+    return label.startswith("yes")
+
+
 class TsunamiModule(HazardModule):
     info = HazardInfo(
         hazard_id="tsunami",
@@ -208,10 +225,14 @@ class TsunamiModule(HazardModule):
         status, version = source_state(session, self.info.source_ids[0])
         if status != "ingested" or polygon_count(session, "tsunami") == 0:
             return self.unavailable(len(points), f"tsunami layer not ingested (status={status})")
-        hits = polygon_lookup(session, "tsunami", points)
+        hits = polygon_lookup(session, "tsunami", points, priority_sql=_TSUNAMI_PRIORITY)
         out = []
         for i in points.index:
             h = hits.get(int(i))
+            if h is not None and not tsunami_polygon_is_hazard(h):
+                # The CGS layer also publishes county-wide "No, Outside Hazard Area"
+                # polygons; containment in one of those is evidence of *not* being exposed.
+                h = None
             if h is None:
                 out.append(
                     HazardResult(
