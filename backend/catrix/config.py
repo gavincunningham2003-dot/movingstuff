@@ -65,6 +65,18 @@ class Settings(BaseSettings):
     # NSI counties above this many structures are skipped unless --include-large.
     nsi_max_structures_per_county: int = 1_500_000
 
+    # API safety. The API is designed to run on a trusted network (local demo or
+    # behind a reverse proxy). Setting CATRIX_API_KEY makes every route except /health
+    # require an `X-API-Key` header; allowed_origins drives CORS.
+    api_key: str | None = None
+    allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+        ]
+    )
+
     # API guard rails
     max_page_size: int = 500
     # Rejects unbounded spatial queries. 120 deg^2 admits the whole California extent

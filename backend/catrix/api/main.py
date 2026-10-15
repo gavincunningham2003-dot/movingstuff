@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from catrix import __version__
+from catrix.api.deps import require_api_key
 from catrix.api.routes import (
     data_quality,
     data_sources,
@@ -31,7 +33,22 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_json)
     settings.ensure_dirs()
-    log.info("api_started", version=__version__, env=settings.env)
+    recovered: dict[str, Any]
+    try:
+        from catrix.db.session import session_scope
+        from catrix.portfolio.jobs import recover_stale_jobs
+
+        with session_scope() as s:
+            recovered = recover_stale_jobs(s)
+    except Exception as exc:  # database may not be up yet; /health reports it
+        recovered = {"error": str(exc)[:200]}
+    log.info(
+        "api_started",
+        version=__version__,
+        env=settings.env,
+        api_key_required=bool(settings.api_key),
+        stale_jobs=recovered,
+    )
     yield
     log.info("api_stopped")
 
@@ -50,15 +67,17 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+    settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
+        allow_origins=list(settings.allowed_origins),
         allow_methods=["*"],
         allow_headers=["*"],
     )
     prefix = "/api/v1"
-    for r in (health, data_sources, properties, hazards, portfolio, models, data_quality, jobs):
-        app.include_router(r.router, prefix=prefix)
+    app.include_router(health.router, prefix=prefix)  # always open: liveness probe
+    for r in (data_sources, properties, hazards, portfolio, models, data_quality, jobs):
+        app.include_router(r.router, prefix=prefix, dependencies=[Depends(require_api_key)])
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

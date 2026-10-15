@@ -324,12 +324,58 @@ class PropertyHazardAssessment(Base):
     method: Mapped[str | None] = mapped_column(String(64))
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     caveats: Mapped[list[Any] | None] = mapped_column(JSON)
+    # The refresh that wrote this row (None for rows written before versioning).
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assessment_runs.id", ondelete="SET NULL"), index=True
+    )
 
     address: Mapped[Address] = relationship(back_populates="assessments")
 
     __table_args__ = (
         UniqueConstraint("address_id", "hazard_id", name="uq_assessment_addr_hazard"),
     )
+
+
+class AssessmentRun(Base):
+    """One versioned refresh of the assessment table (hazards or the composite score)."""
+
+    __tablename__ = "assessment_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="hazards")
+    hazard_ids: Mapped[list[Any] | None] = mapped_column(JSON)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    n_addresses: Mapped[int] = mapped_column(Integer, default=0)
+    counts: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class AssessmentStaging(Base):
+    """Rows of an in-progress refresh; swapped into the live table on commit."""
+
+    __tablename__ = "assessment_staging"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assessment_runs.id", ondelete="CASCADE"), index=True
+    )
+    address_id: Mapped[int] = mapped_column(Integer)
+    hazard_id: Mapped[str] = mapped_column(String(64))
+    source_id: Mapped[str] = mapped_column(String(64))
+    source_version: Mapped[str | None] = mapped_column(String(128))
+    assessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    classification: Mapped[str | None] = mapped_column(String(128))
+    value: Mapped[float | None] = mapped_column(Float)
+    units: Mapped[str | None] = mapped_column(String(128))
+    probability_horizon: Mapped[str | None] = mapped_column(String(64))
+    coverage_status: Mapped[str] = mapped_column(String(64))
+    confidence: Mapped[str | None] = mapped_column(String(16))
+    method: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    caveats: Mapped[list[Any] | None] = mapped_column(JSON)
 
 
 # --------------------------------------------------------------------------- ML
@@ -433,7 +479,9 @@ class PortfolioProperty(Base):
     deductible: Mapped[float | None] = mapped_column(Float)
     county_fips: Mapped[str | None] = mapped_column(String(5), index=True)
     is_duplicate_of: Mapped[int | None] = mapped_column(Integer)
-    duplicate_kind: Mapped[str | None] = mapped_column(String(24))  # exact|shared_location|repeated_id
+    duplicate_kind: Mapped[str | None] = mapped_column(
+        String(24)
+    )  # exact|shared_location|repeated_id
     location_key: Mapped[str | None] = mapped_column(String(64), index=True)
     hazards: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     composite_score: Mapped[float | None] = mapped_column(Float)
@@ -475,6 +523,14 @@ class ProcessingJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Leases and retries (see catrix.portfolio.jobs)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    lease_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(64))
+    last_error: Mapped[str | None] = mapped_column(Text)
 
 
 class DataQualityReport(Base):

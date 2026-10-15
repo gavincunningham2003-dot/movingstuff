@@ -707,6 +707,24 @@ export interface JobOut {
   finished_at: string | null;
   error: string | null;
   result: Record<string, unknown> | null;
+  attempts?: number;
+  max_attempts?: number;
+  lease_expires_at?: string | null;
+  heartbeat_at?: string | null;
+  worker_id?: string | null;
+  last_error?: string | null;
+}
+
+export interface AssessmentRunOut {
+  run_id: string;
+  status: string;
+  kind: string;
+  hazard_ids: string[];
+  started_at: string;
+  finished_at: string | null;
+  n_addresses: number;
+  counts: Record<string, unknown> | null;
+  error: string | null;
 }
 
 // --------------------------------------------------------------------------- frontend-only endpoints

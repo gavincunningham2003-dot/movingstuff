@@ -570,6 +570,46 @@ composite score reaching the JSON encoder (NaN is now treated as missing both wh
 enrichment writes scores and when the stress test reads them). Final run: integration
 **5 passed** (28 s), unit **97 passed**, `mypy` clean (80 files), frontend build succeeds.
 
+### Stage D — job recovery, versioned assessments and API safety (2026-10-15)
+
+Scope: items 11-13 of the improvement prompt. Migration `0007_runs_and_job_leases`
+(applied to the development database; a first attempt failed because the 35-character
+revision id did not fit `alembic_version.version_num`, so the id was shortened).
+
+**Versioned, atomic assessment refresh (`catrix/hazards/refresh.py`).** `catrix assess` and
+`catrix score` no longer delete the live rows first. A refresh opens an `assessment_runs`
+record, stages its rows in `assessment_staging` batch by batch (durable progress), and on
+completion deletes the live rows of the refreshed hazards and moves the staged rows in
+**inside one transaction**, stamping every row with its `run_id`. A failure marks the run
+failed, discards the staged rows and leaves the previous assessment untouched. Readers see
+either the old or the new assessment, never a half-empty table. Runs are listed at
+`GET /jobs/assessment-runs`.
+
+**Leased, retryable portfolio jobs (`catrix/portfolio/jobs.py`).** Jobs carry `attempts`,
+`max_attempts` (3), `lease_seconds` (600), `lease_expires_at`, `heartbeat_at`, `worker_id`
+and `last_error`. A claim is one atomic `UPDATE ... WHERE pending or lease expired and
+attempts left`, used by both the API's inline runner and the database worker, so they can
+never run the same job twice. The enrichment heartbeats after every batch. A failed attempt
+puts the job (and its portfolio) back to `pending` with the error recorded; the inline
+runner loops on reclaim, the worker picks it up on its next poll, and once attempts are
+exhausted the job and portfolio are marked failed. `recover_stale_jobs` sweeps expired
+leases on every worker poll and at API startup; the migration expires leases of jobs left
+"running" by the previous code so they are swept too.
+
+**API safety.** Documented local-only default: CORS limited to the dashboard origins
+(`CATRIX_ALLOWED_ORIGINS`), uploads capped at 25 MB / 100,000 rows, bounded spatial queries,
+no per-user auth. Optional `CATRIX_API_KEY`: when set, every router except `/health`
+requires an `X-API-Key` header (constant-time comparison; 401 otherwise), checked before any
+database work. Compose passes both settings through; README and SETUP describe them.
+
+**Tests.** Unit: `test_api_security.py` (open when unset; 401/422 with and without the
+key; `/health` always open; CORS origin allow-list). Integration: a simulated connector
+outage mid-refresh leaves the live assessment count unchanged and records a failed run with
+empty staging, then a good single-hazard refresh replaces only that hazard's rows with the
+new `run_id`; job lease semantics (second claim refused, expired lease retried once, failed
+after the last attempt, no further claims); API key enforced on database routes and the
+run listing. Integration suite **8 passed** (36 s); unit suite **100 passed** (161.5 s); `mypy` clean (82 files).
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.
@@ -595,6 +635,9 @@ enrichment writes scores and when the stress test reads them). Final run: integr
   policy (mandatory/optional/experimental), portable self-describing artefacts with
   validation on load, test-set metrics, operating points, calibration table, geographic
   breakdown, SHAP, prediction-quality report, insufficient-data guard.
+- Versioned, atomic assessment refreshes (staging + single-transaction swap, run registry);
+  leased, heartbeating, retried processing jobs with stale-lease recovery; optional API key
+  and configurable CORS.
 - Data-quality checks and report persistence.
 - FastAPI v1 routes with OpenAPI, bbox guard rails, zoom-dependent simplification.
 - React/TypeScript dashboard (six pages) — written, not compiled.
@@ -619,6 +662,8 @@ Unit tests run without network (respx mocks) or database. Integration tests requ
 | 2026-10-14 | `npm run build` (Stage A and B) | succeeds |
 | 2026-10-15 | `pytest tests/unit -q` after Stage C | **97 passed** |
 | 2026-10-15 | `pytest tests/integration -m integration` (PostGIS `catrix_test`) after Stage C | **5 passed** (28 s) |
+| 2026-10-15 | `pytest tests/integration -m integration` after Stage D | **8 passed** (36 s) |
+| 2026-10-15 | `pytest tests/unit -q` after Stage D | **100 passed** (161.5 s) |
 
 First run surfaced four failures, all fixed: a numpy `.astype("Int64")` call in the
 building matcher (code bug), and three test-data issues (synthetic ML table violated the

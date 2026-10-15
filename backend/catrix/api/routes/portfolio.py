@@ -25,6 +25,7 @@ from catrix.db.models import (
     HazardSource,
     ModelVersion,
     Portfolio,
+    ProcessingJob,
     PropertyHazardAssessment,
     Region,
 )
@@ -50,13 +51,19 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 def _run_job(job_id: uuid.UUID) -> None:
     # Claim atomically so the database worker (if one is running) cannot pick the same
-    # job up: only a 'pending' job can be claimed, and only once.
-    with session_scope() as s:
-        if not claim_job(s, job_id):
-            log.info("job_already_claimed", job=str(job_id))
-            return
-    with session_scope() as s:
-        run_portfolio_job(s, job_id)
+    # job up. A failed attempt puts the job back to 'pending', so loop until it is either
+    # completed or out of attempts.
+    wid = f"api:{uuid.uuid4().hex[:8]}"
+    for _ in range(10):
+        with session_scope() as s:
+            if not claim_job(s, job_id, wid):
+                log.info("job_not_claimable", job=str(job_id))
+                return
+        with session_scope() as s:
+            run_portfolio_job(s, job_id)
+            job = s.get(ProcessingJob, job_id)
+            if job is None or job.status != "pending":
+                return
 
 
 def _status(pf: Portfolio) -> PortfolioStatusOut:
@@ -225,8 +232,6 @@ def portfolio_status(portfolio_id: str, db: DB) -> PortfolioStatusOut:
     pf = _get(db, portfolio_id)
     out = _status(pf)
     if pf.job_id and pf.status == "running":
-        from catrix.db.models import ProcessingJob
-
         job = db.get(ProcessingJob, pf.job_id)
         out.progress = job.progress if job else 0.0
     return out

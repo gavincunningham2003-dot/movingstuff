@@ -93,6 +93,18 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173 (proxies 
 
 Or everything at once: `docker compose up --build`.
 
+## 7b. Security and recovery settings
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CATRIX_API_KEY` | empty | When set, every route except `/health` requires `X-API-Key: <value>`. The dashboard does not send a key, so keep it empty for the local demo or front the API with a proxy that adds the header. |
+| `CATRIX_ALLOWED_ORIGINS` | dashboard localhost origins | JSON list of CORS origins. |
+| `CATRIX_JOB_RUNNER` | `inline` | `inline`: the API runs portfolio jobs in a background task; `worker`: only `python -m catrix.pipeline.worker` runs them. Both claim jobs through the same lease, so they never run one job twice. |
+
+Jobs whose runner died are retried automatically (lease 10 minutes, 3 attempts) and
+`catrix assess` / `catrix score` can be re-run at any time: the previous assessment stays
+live until the new one is complete.
+
 ## 8. Tests
 
 ```bash

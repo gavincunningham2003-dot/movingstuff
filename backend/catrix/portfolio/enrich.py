@@ -23,6 +23,8 @@ from catrix.ingest.store import rows
 from catrix.logging import get_logger
 from catrix.ml.predict import predict_for_points
 from catrix.portfolio.analytics import summarise_portfolio
+from catrix.portfolio.jobs import claim_job as _claim_job
+from catrix.portfolio.jobs import heartbeat
 from catrix.portfolio.validation import parse_portfolio_csv
 from catrix.scoring.composite import compute_composite
 
@@ -97,20 +99,10 @@ def _num(v: Any) -> float | None:
     return None if v is None or pd.isna(v) else float(v)
 
 
-def claim_job(session: Session, job_id: uuid.UUID) -> bool:
-    """Move one specific job from 'pending' to 'claimed' atomically; False if another
-    runner got there first (or the job is not pending)."""
-    from sqlalchemy import text
-
-    row = session.execute(
-        text(
-            "UPDATE processing_jobs SET status = 'claimed' "
-            "WHERE id = :id AND status = 'pending' RETURNING id"
-        ),
-        {"id": job_id},
-    ).first()
-    session.commit()
-    return row is not None
+def claim_job(session: Session, job_id: uuid.UUID, worker_id: str | None = None) -> bool:
+    """Claim one specific job (pending, or with an expired lease and attempts left);
+    False if another runner holds it. See :mod:`catrix.portfolio.jobs`."""
+    return _claim_job(session, job_id, worker_id)
 
 
 def run_portfolio_job(session: Session, job_id: uuid.UUID, *, allow_network: bool = True) -> None:
@@ -120,17 +112,40 @@ def run_portfolio_job(session: Session, job_id: uuid.UUID, *, allow_network: boo
     pf = session.get(Portfolio, uuid.UUID(job.params["portfolio_id"]))
     assert pf is not None
     job.status = pf.status = "running"
-    job.started_at = datetime.now(UTC)
+    job.started_at = job.started_at or datetime.now(UTC)
+    heartbeat(session, job)
     session.commit()
     try:
         _enrich(session, pf, job, allow_network=allow_network)
         job.status = pf.status = "completed"
         job.progress = 1.0
+        job.error = pf.error = None
+        job.finished_at = datetime.now(UTC)
     except Exception as exc:
-        log.exception("portfolio_job_failed", job=str(job_id))
-        job.status = pf.status = "failed"
-        job.error = pf.error = f"{type(exc).__name__}: {exc}"[:2000]
-    job.finished_at = datetime.now(UTC)
+        session.rollback()
+        job = session.get(ProcessingJob, job_id)
+        pf = session.get(Portfolio, uuid.UUID(job.params["portfolio_id"]))  # type: ignore[union-attr, index]
+        assert job is not None and pf is not None
+        message = f"{type(exc).__name__}: {exc}"[:2000]
+        job.last_error = message
+        if (job.attempts or 0) < (job.max_attempts or 1):
+            # back to the queue: the next claim (inline loop or worker) retries it
+            log.warning(
+                "portfolio_job_retry",
+                job=str(job_id),
+                attempt=job.attempts,
+                max_attempts=job.max_attempts,
+                error=message[:200],
+            )
+            job.status = pf.status = "pending"
+            job.worker_id = None
+            job.lease_expires_at = None
+            pf.error = message
+        else:
+            log.exception("portfolio_job_failed", job=str(job_id))
+            job.status = pf.status = "failed"
+            job.error = pf.error = message
+            job.finished_at = datetime.now(UTC)
     session.commit()
 
 
@@ -263,7 +278,7 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
             hazards_col.append({hid: r.to_dict() for hid, r in per.items()})
             scores.append(comp.score)
             fin_col.append({**fin, "composite": comp.to_dict()})
-        job.progress = min(0.9, (start + len(chunk)) / len(df))
+        heartbeat(session, job, progress=min(0.9, (start + len(chunk)) / len(df)))
         session.commit()
     df["hazards"] = pd.Series(hazards_col, index=df.index, dtype=object)
     df["composite_score"] = pd.Series(scores, index=df.index, dtype=float)

@@ -10,11 +10,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from catrix.db.models import ModelVersion, Prediction, PropertyHazardAssessment
 from catrix.hazards.base import CoverageStatus, HazardResult
+from catrix.hazards.refresh import begin_run, commit_run, fail_run, stage_rows
 from catrix.logging import get_logger
 from catrix.scoring.composite import METHOD_VERSION, compute_composite
 
@@ -22,10 +23,22 @@ log = get_logger(__name__)
 
 
 def score_all_addresses(session: Session, batch: int = 5000) -> int:
-    session.execute(
-        delete(PropertyHazardAssessment).where(PropertyHazardAssessment.hazard_id == "_composite")
-    )
-    session.flush()
+    """Recompute the composite row for every address as one atomic, versioned refresh."""
+    run = begin_run(session, hazard_ids=["_composite"], kind="composite")
+    try:
+        n = _score_into_run(session, run, batch)
+        commit_run(session, run, {"_composite": n})
+    except Exception as exc:
+        fail_run(session, run, f"{type(exc).__name__}: {exc}")
+        raise
+    log.info("composite_scored", n=n)
+    return n
+
+
+def _score_into_run(session: Session, run: object, batch: int) -> int:
+    from catrix.db.models import AssessmentRun
+
+    assert isinstance(run, AssessmentRun)
     mv = session.execute(
         select(ModelVersion.id).where(ModelVersion.is_selected.is_(True))
     ).scalar_one_or_none()
@@ -86,8 +99,7 @@ def score_all_addresses(session: Session, batch: int = 5000) -> int:
             per = {}
             n += 1
             if len(inserts) >= batch:
-                session.bulk_insert_mappings(PropertyHazardAssessment, inserts)
-                session.commit()
+                stage_rows(session, run, inserts)
                 inserts = []
         current = a.address_id
         per[a.hazard_id] = HazardResult(
@@ -104,7 +116,5 @@ def score_all_addresses(session: Session, batch: int = 5000) -> int:
         flush_one(current)
         n += 1
     if inserts:
-        session.bulk_insert_mappings(PropertyHazardAssessment, inserts)
-    session.commit()
-    log.info("composite_scored", n=n)
+        stage_rows(session, run, inserts)
     return n

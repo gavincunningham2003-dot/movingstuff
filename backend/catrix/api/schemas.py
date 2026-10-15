@@ -554,6 +554,24 @@ class JobOut(BaseModel):
     finished_at: datetime | None
     error: str | None
     result: dict[str, Any] | None
+    attempts: int = 0
+    max_attempts: int = 3
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    worker_id: str | None = None
+    last_error: str | None = None
+
+
+class AssessmentRunOut(BaseModel):
+    run_id: str
+    status: str
+    kind: str
+    hazard_ids: list[str]
+    started_at: datetime
+    finished_at: datetime | None
+    n_addresses: int
+    counts: dict[str, Any] | None
+    error: str | None
 
 
 PropertyDetailOut.model_rebuild()

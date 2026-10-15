@@ -43,6 +43,8 @@ services:
       CATRIX_DATA_DIR: /data
       CATRIX_REGISTRY_FILE: /app/data_sources.yaml
       CATRIX_JOB_RUNNER: worker  # the worker service runs portfolio jobs, not the API
+      CATRIX_API_KEY: ${CATRIX_API_KEY:-}  # empty = open on the local network
+      CATRIX_ALLOWED_ORIGINS: ${CATRIX_ALLOWED_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}
       CATRIX_LOG_JSON: "true"
     volumes:
       - ./data:/data

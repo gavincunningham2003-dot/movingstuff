@@ -146,6 +146,26 @@ Sources (provenance, versions, ingestion state, coverage, errors, unavailable so
 
 Screenshots will be added once the stack has been run (`docs/screenshots/`).
 
+## Operations, recovery and security
+
+- **Assessment refreshes are versioned and atomic.** `catrix assess` and `catrix score`
+  stage their rows under an `assessment_runs` entry and swap them into
+  `property_hazard_assessments` in one transaction at the end, so the API never serves a
+  half-refreshed table and a crash leaves the previous assessment intact. Every live row
+  carries the `run_id` that produced it; `GET /api/v1/jobs/assessment-runs` lists runs.
+- **Portfolio jobs are leased and retried.** A job is claimed atomically (pending, or an
+  expired lease), heartbeats as it progresses, and is returned to the queue when its
+  runner dies, up to `max_attempts` (3) before it is marked failed. The worker sweeps
+  stale leases on every poll; the API does so at startup. `GET /api/v1/jobs/{id}` shows
+  attempts, lease and last error.
+- **The API is local-only by default.** It binds to a trusted network with CORS limited to
+  the dashboard origins (`CATRIX_ALLOWED_ORIGINS`). Set `CATRIX_API_KEY` to require an
+  `X-API-Key` header on every route except `/health` (constant-time comparison); put a
+  TLS-terminating reverse proxy in front of it for anything beyond a workstation. Uploads
+  are capped at 25 MB and 100,000 rows; spatial queries are bounded by `max_bbox_area_deg2`.
+  There is no per-user auth or audit log: this is a screening tool for an analyst's desk,
+  not a multi-tenant service.
+
 ## Tests
 
 ```bash

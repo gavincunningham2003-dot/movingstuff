@@ -17,6 +17,7 @@ from catrix.db.models import (
     HazardGeometry,
     HazardLine,
     HazardSource,
+    PropertyHazardAssessment,
     Region,
     WildfireEvent,
 )
@@ -350,3 +351,114 @@ def test_portfolio_stress_test_replays_a_perimeter(seeded, monkeypatch):
     ).text
     assert "fire_name" in csv_out.splitlines()[0] and "SYNTHETIC FIRE" in csv_out
     assert client.get(f"/api/v1/portfolio/{pid}/stress-tests/999999").status_code == 404
+
+
+def test_assessment_refresh_is_versioned_and_atomic(seeded, monkeypatch):
+    """A failed refresh must leave the previous assessment untouched."""
+    from sqlalchemy import func, select
+
+    from catrix.db.models import AssessmentRun, AssessmentStaging
+    from catrix.hazards import registry
+    from catrix.hazards.registry import assess_all_addresses
+
+    live_before = seeded.execute(
+        select(func.count()).select_from(PropertyHazardAssessment)
+    ).scalar_one()
+    runs = list(seeded.execute(select(AssessmentRun)).scalars())
+    assert runs and any(r.status == "completed" and r.kind == "hazards" for r in runs)
+    with_run = seeded.execute(
+        select(func.count())
+        .select_from(PropertyHazardAssessment)
+        .where(PropertyHazardAssessment.run_id.is_not(None))
+    ).scalar_one()
+    assert with_run == live_before
+
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated connector outage")
+
+    monkeypatch.setattr(registry, "assess_points", boom)
+    with pytest.raises(RuntimeError, match="simulated"):
+        assess_all_addresses(seeded, hazard_ids=["wildfire_fhsz"])
+    monkeypatch.undo()
+    live_after = seeded.execute(
+        select(func.count()).select_from(PropertyHazardAssessment)
+    ).scalar_one()
+    assert live_after == live_before
+    latest = (
+        seeded.execute(select(AssessmentRun).order_by(AssessmentRun.started_at.desc()))
+        .scalars()
+        .first()
+    )
+    assert latest is not None and latest.status == "failed" and "simulated" in (latest.error or "")
+    assert seeded.execute(select(func.count()).select_from(AssessmentStaging)).scalar_one() == 0
+    # a good refresh of one hazard replaces only that hazard's rows and stamps the run id
+    counts = assess_all_addresses(seeded, hazard_ids=["wildfire_fhsz"])
+    assert counts == {"wildfire_fhsz": 2}
+    rows = list(
+        seeded.execute(
+            select(PropertyHazardAssessment).where(
+                PropertyHazardAssessment.hazard_id == "wildfire_fhsz"
+            )
+        ).scalars()
+    )
+    newest = (
+        seeded.execute(select(AssessmentRun).order_by(AssessmentRun.started_at.desc()))
+        .scalars()
+        .first()
+    )
+    assert newest is not None and newest.status == "completed"
+    assert len(rows) == 2 and all(r.run_id == newest.id for r in rows)
+    assert (
+        seeded.execute(select(func.count()).select_from(PropertyHazardAssessment)).scalar_one()
+        == live_before
+    )
+
+
+def test_job_leases_retries_and_recovery(seeded):
+    from datetime import UTC, datetime, timedelta
+
+    from catrix.db.models import ProcessingJob
+    from catrix.portfolio.jobs import claim_job, claim_next, recover_stale_jobs
+
+    job = ProcessingJob(job_type="portfolio_enrich", status="pending", params={}, max_attempts=2)
+    seeded.add(job)
+    seeded.commit()
+    jid = job.id
+    assert claim_job(seeded, jid, "w1") is True
+    assert claim_job(seeded, jid, "w2") is False  # live lease held by w1
+    seeded.refresh(job)
+    assert job.status == "claimed" and job.attempts == 1 and job.worker_id == "w1"
+    assert job.lease_expires_at is not None and job.lease_expires_at > datetime.now(UTC)
+    # runner dies: lease expires, the sweep returns the job to the queue
+    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    seeded.commit()
+    assert recover_stale_jobs(seeded) == {"retried": 1, "failed": 0}
+    seeded.refresh(job)
+    assert job.status == "pending" and "lease expired" in (job.last_error or "")
+    assert claim_next(seeded, "w3") == jid
+    seeded.refresh(job)
+    assert job.attempts == 2 and job.worker_id == "w3"
+    # dies again with no attempts left: failed, not retried forever
+    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    seeded.commit()
+    assert recover_stale_jobs(seeded) == {"retried": 0, "failed": 1}
+    seeded.refresh(job)
+    assert job.status == "failed" and job.finished_at is not None
+    assert claim_job(seeded, jid, "w4") is False
+
+
+def test_api_key_enforced_against_database_routes(seeded, monkeypatch):
+    monkeypatch.setenv("CATRIX_DATABASE_URL", integration_db_url())
+    monkeypatch.setenv("CATRIX_API_KEY", "integration-key")
+    from catrix.api.main import create_app
+    from catrix.config import get_settings
+
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    assert client.get("/api/v1/health").status_code == 200
+    assert client.get("/api/v1/portfolio").status_code == 401
+    ok = client.get("/api/v1/portfolio", headers={"X-API-Key": "integration-key"})
+    assert ok.status_code == 200 and isinstance(ok.json(), list)
+    runs = client.get("/api/v1/jobs/assessment-runs", headers={"X-API-Key": "integration-key"})
+    assert runs.status_code == 200 and any(r["status"] == "completed" for r in runs.json())
+    get_settings.cache_clear()

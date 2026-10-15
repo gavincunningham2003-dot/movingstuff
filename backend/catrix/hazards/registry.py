@@ -6,11 +6,11 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 
 import pandas as pd
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from catrix.config import get_settings
-from catrix.db.models import Address, PropertyHazardAssessment
+from catrix.db.models import Address
 from catrix.hazards.base import HazardInfo, HazardModule, HazardResult
 from catrix.hazards.earthquake import (
     EarthquakeHistoryModule,
@@ -19,6 +19,7 @@ from catrix.hazards.earthquake import (
     FaultProximityModule,
 )
 from catrix.hazards.flood import FloodNFHLModule
+from catrix.hazards.refresh import begin_run, commit_run, fail_run, stage_rows
 from catrix.hazards.secondary import (
     ExtremeRainfallModule,
     LandslideSusceptibilityModule,
@@ -27,7 +28,6 @@ from catrix.hazards.secondary import (
     TsunamiModule,
 )
 from catrix.hazards.wildfire import WildfireFHSZModule, WildfirePerimeterHistoryModule
-from catrix.ingest.registry import ensure_sources
 from catrix.logging import get_logger
 
 log = get_logger(__name__)
@@ -155,7 +155,12 @@ def mark_lookup_sources(session: Session) -> dict[str, int]:
 def assess_all_addresses(
     session: Session, *, hazard_ids: list[str] | None = None, batch_size: int | None = None
 ) -> dict[str, int]:
-    """Assess every ingested address and persist to ``property_hazard_assessments``."""
+    """Assess every ingested address and persist to ``property_hazard_assessments``.
+
+    The refresh is versioned and atomic: rows are staged under a new assessment run and
+    swapped into the live table in one transaction at the end, so a crash or an error
+    leaves the previous assessment in place (see :mod:`catrix.hazards.refresh`).
+    """
     settings = get_settings()
     bs = batch_size or settings.batch_size
     rows = session.execute(
@@ -163,46 +168,45 @@ def assess_all_addresses(
     ).all()
     modules = [m for m in build_modules() if not hazard_ids or m.info.hazard_id in hazard_ids]
     counts: dict[str, int] = {m.info.hazard_id: 0 for m in modules}
-    for m in modules:
-        session.execute(
-            delete(PropertyHazardAssessment).where(
-                PropertyHazardAssessment.hazard_id == m.info.hazard_id
+    run = begin_run(session, hazard_ids=[m.info.hazard_id for m in modules], n_addresses=len(rows))
+    try:
+        for start in range(0, len(rows), bs):
+            chunk = rows[start : start + bs]
+            df = pd.DataFrame(chunk, columns=["address_id", "lon", "lat", "county_fips"])
+            res = assess_points(session, df, modules)
+            inserts = []
+            for hid, lst in res.items():
+                for aid, r in zip(df["address_id"], lst, strict=True):
+                    inserts.append(
+                        {
+                            "address_id": int(aid),
+                            "hazard_id": hid,
+                            "source_id": r.source_id,
+                            "source_version": r.source_version,
+                            "assessed_at": r.assessed_at,
+                            "classification": r.classification,
+                            "value": r.value,
+                            "units": r.units,
+                            "probability_horizon": r.probability_horizon,
+                            "coverage_status": r.coverage_status,
+                            "confidence": r.confidence,
+                            "method": r.method,
+                            "details": r.details,
+                            "caveats": r.caveats,
+                        }
+                    )
+                    counts[hid] += 1
+            stage_rows(session, run, inserts)
+            log.info(
+                "assessment_batch_staged",
+                run=str(run.id),
+                done=min(start + bs, len(rows)),
+                total=len(rows),
+                at=datetime.now(UTC).isoformat(),
             )
-        )
-    for start in range(0, len(rows), bs):
-        chunk = rows[start : start + bs]
-        df = pd.DataFrame(chunk, columns=["address_id", "lon", "lat", "county_fips"])
-        res = assess_points(session, df, modules)
-        inserts = []
-        for hid, lst in res.items():
-            for aid, r in zip(df["address_id"], lst, strict=True):
-                inserts.append(
-                    {
-                        "address_id": int(aid),
-                        "hazard_id": hid,
-                        "source_id": r.source_id,
-                        "source_version": r.source_version,
-                        "assessed_at": r.assessed_at,
-                        "classification": r.classification,
-                        "value": r.value,
-                        "units": r.units,
-                        "probability_horizon": r.probability_horizon,
-                        "coverage_status": r.coverage_status,
-                        "confidence": r.confidence,
-                        "method": r.method,
-                        "details": r.details,
-                        "caveats": r.caveats,
-                    }
-                )
-                counts[hid] += 1
-        ensure_sources(session, {str(r["source_id"]) for r in inserts})
-        session.bulk_insert_mappings(PropertyHazardAssessment, inserts)
-        session.commit()
-        log.info(
-            "assessment_batch_committed",
-            done=min(start + bs, len(rows)),
-            total=len(rows),
-            at=datetime.now(UTC).isoformat(),
-        )
+        commit_run(session, run, counts)
+    except Exception as exc:
+        fail_run(session, run, f"{type(exc).__name__}: {exc}")
+        raise
     mark_lookup_sources(session)
     return counts

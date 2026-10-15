@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Generator
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, Header, HTTPException, Query
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,19 @@ def db_session() -> Generator[Session, None, None]:
 
 
 DB = Annotated[Session, Depends(db_session)]
+
+
+def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
+    """No-op unless ``CATRIX_API_KEY`` is configured; then every request on the protected
+    routers must carry a matching ``X-API-Key`` header (constant-time comparison)."""
+    expected = get_settings().api_key
+    if not expected:
+        return
+    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
+        raise HTTPException(401, "missing or invalid API key (X-API-Key)")
+
+
+APIKey = Depends(require_api_key)
 
 
 def parse_bbox(bbox: str | None) -> tuple[float, float, float, float] | None:
