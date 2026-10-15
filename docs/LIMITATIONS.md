@@ -2,9 +2,10 @@
 
 ## Limitations
 
-1. **Nothing has been executed end-to-end yet.** The codebase is complete and tested at the
-   unit level, but ingestion, assessment and training have not been run in the authoring
-   environment (no database). `PROGRESS.md` is the record.
+1. **One machine, one sample.** Everything has been run end-to-end on a single workstation
+   against a 14,994-address sample (see `PROGRESS.md` for every executed step and its real
+   result). The sample is too small for the modern-era (2016+) fuel-feature model, which is
+   recorded as insufficient data rather than reported.
 2. **Address ≠ building.** OpenAddresses points are frequently parcel centroids; matching to
    Microsoft footprints is a ≤ 30 m nearest heuristic with a stated uncertainty class.
 3. **Perimeter labels are incomplete** (small fires, early decades) and measure extent, not
@@ -39,6 +40,23 @@
     only by county NRI benchmarks.
 12. **Secondary hazard liquefaction** depends on a local CGS download and cannot distinguish
     "evaluated and not zoned" from "never evaluated" without quadrangle coverage polygons.
+13. **Historical stress tests replay footprints, not losses.** A CAL FIRE perimeter says
+    which exposures the fire reached; structure survival inside perimeters varies from a few
+    per cent to near-total between fires, so the damage ratio is an explicit input and the
+    totals carry no frequency, no correlation and no expected annual loss. Perimeters are
+    only available for wildfire; earthquake and flood footprints are not replayed.
+14. **Financial logic is policy arithmetic, not pricing.** Gross loss is the replacement
+    value times an assumed ratio; net applies the deductible and the limit (sum insured by
+    default). There is no reinsurance, no sub-limits, no coinsurance, no loss adjustment
+    expense and no inflation of values to the valuation date.
+15. **Duplicate handling is geometric.** Exact duplicates need the same id at the same
+    location (5 m); two policies with different ids at one site are kept as separate
+    exposures and reported as accumulation, which is right for condominiums and wrong for a
+    re-keyed resubmission with a new id.
+16. **The CGS tsunami layer includes "outside hazard area" polygons.** They were stored on
+    first ingestion and made inland points look exposed (found 2026-10-15, fixed in the
+    module, the ingestion filter and the stored data); portfolio analyses created before
+    the fix keep the inflated tsunami count and composite scores until re-uploaded.
 
 ## Future improvements
 

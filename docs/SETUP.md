@@ -117,10 +117,26 @@ ruff check . && mypy catrix
 
 Create the test database once: `docker compose exec db psql -U catrix -c "CREATE DATABASE catrix_test"`.
 
+End-to-end (real browser, real API, Vite dev server started automatically):
+
+```bash
+catrix api                                   # terminal 1, from the repository root
+cd frontend && npx playwright install chromium && npx playwright test   # terminal 2
+# PLAYWRIGHT_CHANNEL=chrome npx playwright test   # use an installed Chrome/Edge instead
+```
+
+The suite uploads `data/samples/example_portfolio.csv` and checks the validation tiles,
+the issue list and that the analysis completes; it passes against an empty, migrated
+database (every hazard is then "unavailable") as well as a fully ingested one.
+
 ## 9. Portfolio demo
 
-Upload `data/samples/example_portfolio.csv` on the Portfolio page (it includes one
-duplicate location and one invalid row on purpose) or:
+`catrix demo` uploads and enriches the bundled example portfolio without network lookups
+and prints the counts, money totals, top exposures, location accumulation and the
+historical fires that touch the book (`--network` enables point-service lookups). The
+25-row example deliberately contains an exact duplicate, a second policy at one site, a
+malformed amount, a missing id and an invalid coordinate. Or upload it on the Portfolio
+page, or:
 
 ```bash
 curl -F file=@data/samples/example_portfolio.csv -F name=demo http://localhost:8000/api/v1/portfolio/upload

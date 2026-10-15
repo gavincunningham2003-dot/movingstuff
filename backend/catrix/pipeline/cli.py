@@ -13,6 +13,7 @@ Examples::
     catrix score                         # composite index
     catrix ml build-dataset | train | predict
     catrix quality                       # data-quality checks
+    catrix demo                          # enrich the bundled example portfolio, print the summary
     catrix api                           # uvicorn
 """
 
@@ -391,6 +392,28 @@ def ml_predict(feature_year: int | None = None) -> None:
     with session_scope() as s:
         n = predict_all_addresses(s, feature_year=feature_year)
     typer.echo(f"predictions: {n}")
+
+
+@app.command("demo")
+def demo(
+    csv: Annotated[
+        str | None, typer.Option(help="portfolio CSV (default: bundled example)")
+    ] = None,
+    name: str = "demo",
+    network: Annotated[bool, typer.Option(help="allow point-service / raster lookups")] = False,
+) -> None:
+    """Upload and enrich the example portfolio, then print the underwriter's first look
+    (counts, money totals, top exposures, location accumulation, historical fires)."""
+    from pathlib import Path
+
+    from catrix.db.session import session_scope
+    from catrix.pipeline.demo import format_report, run_demo
+
+    with session_scope() as s:
+        report = run_demo(s, csv_path=Path(csv) if csv else None, name=name, allow_network=network)
+    typer.echo(format_report(report))
+    if report["status"] != "completed":
+        raise typer.Exit(code=1)
 
 
 @app.command("quality")

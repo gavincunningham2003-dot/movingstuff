@@ -462,3 +462,22 @@ def test_api_key_enforced_against_database_routes(seeded, monkeypatch):
     runs = client.get("/api/v1/jobs/assessment-runs", headers={"X-API-Key": "integration-key"})
     assert runs.status_code == 200 and any(r["status"] == "completed" for r in runs.json())
     get_settings.cache_clear()
+
+
+def test_demo_runs_without_network_and_reports_the_first_look(seeded):
+    from catrix.pipeline.demo import format_report, run_demo
+
+    report = run_demo(seeded, name="demo-test", allow_network=False)
+    assert report["status"] == "completed", report["error"]
+    assert report["rows"] == {
+        "received": 25,
+        "valid": 24,
+        "invalid": 1,
+        "exact_duplicates_excluded": 1,
+        "shared_location": 1,
+        "distinct_locations": 22,
+    }
+    assert report["financial"]["total_insured_value"] == 17_630_000
+    assert report["summary"]["n_exposures"] == 23 and report["location_accumulation"]
+    assert isinstance(report["stress_events"], list)
+    assert '"portfolio_id"' in format_report(report)

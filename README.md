@@ -43,13 +43,14 @@ catrix/
 │   │   ├── ml/         location-year dataset, leakage checks, baselines → XGBoost, calibration, SHAP
 │   │   ├── scoring/    transparent composite screening index
 │   │   ├── finance/    scenario losses with assumption provenance
-│   │   ├── portfolio/  CSV validation, enrichment job, aggregation, export
+│   │   ├── portfolio/  CSV contract, duplicate kinds, enrichment job, aggregation, stress tests, export
 │   │   ├── quality/    data-quality checks
 │   │   ├── api/        versioned REST API (/api/v1, OpenAPI at /api/docs)
 │   │   └── pipeline/   `catrix` CLI and background worker
 │   ├── alembic/        migrations (PostGIS schema)
 │   └── tests/          unit (mocked HTTP), integration (real PostGIS), live (opt-in endpoints)
 ├── frontend/           React 18 + TypeScript + Vite + Tailwind + MapLibre + Recharts + TanStack Query
+│   └── e2e/            Playwright end-to-end tests (real browser, real API)
 ├── data_sources.yaml   dataset registry: provenance, verification status, licences
 ├── data/samples/       example portfolio CSV
 ├── docs/               architecture, provenance, schema, ML methodology, limitations
@@ -141,10 +142,11 @@ tsunami / perimeter overlays with legends and units), Property Risk Explorer (ha
 ML prediction with SHAP, environment, composite breakdown, financial scenarios), ML Model
 Analytics (comparison table, ROC/PR/calibration, confusion matrix, importance, SHAP,
 geographic performance, limitations), Portfolio Analysis (CSV upload → enrichment job →
-map, concentration, top exposures, county summaries, scenarios, export) and Data Quality &
+map, concentration, location accumulation, top exposures, county summaries, historical
+wildfire stress tests, financial totals and scenario sensitivity, export) and Data Quality &
 Sources (provenance, versions, ingestion state, coverage, errors, unavailable sources).
 
-Screenshots will be added once the stack has been run (`docs/screenshots/`).
+Screenshots from the running stack are in [`docs/screenshots/`](docs/screenshots/README.md).
 
 ## Operations, recovery and security
 
@@ -173,7 +175,22 @@ cd backend                                 # tests and linters run inside backen
 pytest tests/unit -q                       # no network, no database
 CATRIX_TEST_DATABASE_URL=postgresql+psycopg://catrix:catrix@localhost:5432/catrix_test pytest tests/integration -m integration
 pytest tests/live -m live                  # opt-in: real endpoints
+cd ../frontend && npx playwright test      # end-to-end, needs `catrix api` running
 ```
+
+CI (`.github/workflows/ci.yml`) runs ruff, mypy, the unit and PostGIS integration suites, a
+migrate-up/down/up check on an empty database, the frontend typecheck and build, and the
+Playwright suite against a freshly migrated API.
+
+## Reproducible demo
+
+```bash
+catrix demo        # enrich data/samples/example_portfolio.csv without network lookups, print the summary
+```
+
+The JSON it prints (row classification, money totals, top exposures, location accumulation,
+historical fires that touch the book) is the same data the Portfolio page shows. On an
+empty database it still completes, with every hazard reported as unavailable.
 
 ## Documentation
 

@@ -610,6 +610,71 @@ new `run_id`; job lease semantics (second claim refused, expired lease retried o
 after the last attempt, no further claims); API key enforced on database routes and the
 run listing. Integration suite **8 passed** (36 s); unit suite **100 passed** (161.5 s); `mypy` clean (82 files).
 
+### Tsunami exposure bug found and fixed (2026-10-15)
+
+While checking the demo output, 14 of the 23 example exposures (including Napa, San Jose,
+Hollywood and the Berkeley Hills) were reported inside the CGS tsunami hazard area. The CGS
+service publishes county-wide **"No, Outside Hazard Area"** polygons alongside the hazard
+polygons; the first ingestion stored both (19 "No" polygons, 85,268 km², against 18 "Yes"
+polygons, 34,090 km²), and the tsunami module treated containment in any polygon as
+exposure. 8,613 of 14,994 addresses carried the wrong flag, which also inflated their
+composite screening index (tsunami has weight 0.20 in the flood family).
+
+Fix: the module now counts only "Yes" polygons (preferring them where polygons overlap) and
+the ingestion spec filters the service to `Evacuate LIKE 'Yes%'`; a regression test covers
+both. The 19 stored outside-area polygons were deleted and `catrix assess --hazard tsunami`
+and `catrix score` were re-run through the new atomic refresh: tsunami exposure is now
+**365 of 14,994 addresses** (was 8,613), both runs recorded in `assessment_runs` as
+completed (hazards 14,994 rows; composite 14,994 rows). The re-run demo reports 1 of 23
+example exposures in the hazard area (was 14), mean composite index 35.8 (was 40.0), the
+Camp Fire still the only perimeter containing an exposure. Portfolio analyses created
+before the fix keep the old counts until re-uploaded. Note: the tsunami polygon lookup is
+slow (about 2 minutes per 500-point batch, 70 minutes for the sample) because the
+remaining hazard polygons are large multipolygons; subdividing them at ingestion would fix
+that and is listed under next tasks.
+
+### Stage E — tests, CI, demo and documentation (2026-10-15)
+
+Scope: items 14-18 of the improvement prompt.
+
+**Tests added across the branch.** Unit: chronological CV and artefacts (6), CSV contract
+and duplicate kinds (5), finance (4), stress-test arithmetic (5), API security (3), tsunami
+polygons (2); the suite went from 85 to 102 tests. Integration (PostGIS): portfolio
+round-trip with the new counts, stress-test replay, atomic refresh failure/success, job
+lease/retry/recovery, API key on database routes, and the demo command. End-to-end
+(Playwright, `frontend/e2e/portfolio.spec.ts`): shell loads with the API reachable, the
+column-mapping panel is driven by the served CSV contract, and uploading the example CSV
+produces the expected tiles (25 / 24 / 1 / 1 exact duplicate / 1 shared location / 22
+locations), the severity-tagged issue list and a completed analysis with the accumulation,
+stress-test and financial cards.
+
+**Playwright on this machine.** The bundled Chromium 1134 download fails to start ("side-
+by-side configuration is incorrect"), so the config accepts `PLAYWRIGHT_CHANNEL=chrome|msedge`
+to use an installed browser; the suite was run with Chrome: **3 passed (1.1 min)**. CI
+installs Chromium with `--with-deps` on Ubuntu, where the download is known to work.
+
+**CI (`.github/workflows/ci.yml`).** Backend job unchanged plus a migrate-up / downgrade-one /
+up check on an empty PostGIS database; frontend job adds `npm run typecheck`; new `e2e` job
+starts a migrated API against a PostGIS service and runs the Playwright suite, uploading the
+HTML report as an artefact. `workflow_dispatch` added so the live-sources job can be run by
+hand.
+
+**Reproducible demo.** `catrix demo` (and `make demo`) uploads the bundled 25-row example,
+enriches it without network lookups and prints the counts, money totals, top exposures,
+location accumulation and the historical fires touching the book as JSON. Real output on
+this machine (after the tsunami fix): 25 received / 24 valid / 1 invalid / 1 exact duplicate
+/ 1 shared location / 22 locations; 23 exposures, 1 in a tsunami hazard area, 1 in Very High
+FHSZ; sum insured $17.63 M, replacement $26.14 M, explicit limits $14.12 M on 16 exposures;
+Camp Fire (2018) is the one perimeter containing an exposure (P-0004, $380,000, 2.16 % of
+TIV). The example CSV itself is the fixture: it carries an exact duplicate, a second
+policy at one site, a malformed amount, a missing id and an invalid coordinate on purpose.
+
+**Documentation.** README (features, operations/recovery/security, tests, CI, demo,
+screenshots), SETUP (security settings, E2E, demo), DATABASE_SCHEMA (migrations 0003-0007,
+new tables and columns), LIMITATIONS (stress tests replay footprints not losses, policy
+arithmetic not pricing, geometric duplicate handling, the tsunami layer), ML_METHODOLOGY
+(Stage A). Screenshots of the running stack are in `docs/screenshots/`.
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.
@@ -641,7 +706,9 @@ run listing. Integration suite **8 passed** (36 s); unit suite **100 passed** (1
 - Data-quality checks and report persistence.
 - FastAPI v1 routes with OpenAPI, bbox guard rails, zoom-dependent simplification.
 - React/TypeScript dashboard (six pages) — written, not compiled.
-- Docker Compose, CI workflow, documentation set.
+- `catrix demo` reproducible demo; Playwright end-to-end suite; CI with unit, integration,
+  migration round-trip, frontend typecheck/build and end-to-end jobs; Docker Compose;
+  documentation set with screenshots.
 
 ## Test results
 
@@ -664,6 +731,11 @@ Unit tests run without network (respx mocks) or database. Integration tests requ
 | 2026-10-15 | `pytest tests/integration -m integration` (PostGIS `catrix_test`) after Stage C | **5 passed** (28 s) |
 | 2026-10-15 | `pytest tests/integration -m integration` after Stage D | **8 passed** (36 s) |
 | 2026-10-15 | `pytest tests/unit -q` after Stage D | **100 passed** (161.5 s) |
+| 2026-10-15 | `pytest tests/unit -q` after Stage E and the tsunami fix | **102 passed** (179.6 s) |
+| 2026-10-15 | `pytest tests/integration -m integration` after Stage E | **9 passed** (demo test added; 8 earlier + 1) |
+| 2026-10-15 | `ruff check . && ruff format --check .` / `mypy catrix` | clean / clean (83 files) |
+| 2026-10-15 | `npm run typecheck && npm run build` | clean / succeeds |
+| 2026-10-15 | `PLAYWRIGHT_CHANNEL=chrome npx playwright test` (API + Vite running) | **3 passed** (1.1 min); screenshot capture 6 passed |
 
 First run surfaced four failures, all fixed: a numpy `.astype("Int64")` call in the
 building matcher (code bug), and three test-data issues (synthetic ML table violated the
@@ -673,20 +745,26 @@ rounding boundary).
 
 ## Outstanding blockers
 
-1. ~~OpenAddresses token~~ resolved on 2026-10-13 (third pass): token in local `.env`, 14,994 addresses ingested.
-2. **FEMA hosts** unreachable from the authoring network; NFHL/NRI connectors must be
-   validated on first run from another network (or use local NFHL GDB downloads).
-3. ~~No database provisioned~~ resolved on 2026-10-13 (third pass): PostGIS runs locally and the schema is migrated.
-4. ~~Node.js absent~~ resolved: the frontend builds.
+1. ~~OpenAddresses token~~ resolved (token in local `.env`, 14,994 addresses ingested).
+2. **FEMA hosts** geo-blocked from the authoring network: NFHL and NRI come from the Esri
+   Living Atlas / FEMA AGOL mirrors (recorded in the registry as superseded sources).
+3. ~~No database provisioned~~ resolved; ~~Node.js absent~~ resolved.
+4. **Playwright's bundled Chromium does not start on this workstation** (side-by-side
+   configuration error); the E2E suite runs with the installed Chrome via
+   `PLAYWRIGHT_CHANNEL=chrome` and with bundled Chromium in CI.
+5. **The modern-era (2016+) fuel-feature model has too few positives** (115 train / 9 test)
+   on the 14,994-address sample; it is recorded as insufficient data, not reported.
 
 ## Next implementation tasks
 
-1. Run `docker compose up`, `catrix db upgrade`, `catrix ingest all`, `catrix assess`,
-   `catrix score`; record real counts and quality results here.
-2. Run `catrix ml build-dataset` and `catrix ml train`; publish real metrics (or the
-   insufficient-data explanation) and add screenshots.
-3. Validate the NFHL schema live; implement the NHD flowline distance connector.
-4. Run `catrix ingest nsi` and `catrix ingest features`; confirm the LFPS job flow and the
-   NLCD WCS clip sizes on a real run; verify the transcribed Hazus tables against the
-   current manuals.
-5. Frontend `npm install && npm run build`; fix any type errors; add screenshots.
+1. Subdivide large hazard polygons (tsunami, FHSZ) at ingestion (`ST_Subdivide`) so point
+   lookups stop taking minutes per batch; re-ingest the tsunami layer with the new
+   `Evacuate LIKE 'Yes%'` filter instead of the manual delete.
+2. Enlarge the address sample (or sample fire-prone counties) so the modern-era
+   fuel-feature experiment reaches the positive-count threshold, then compare it with the
+   1995-2023 model on the same chronological folds.
+3. Earthquake and flood footprints for the stress tests (USGS ShakeMap scenarios, NFHL
+   1 % floodplain by reach) alongside the wildfire perimeters.
+4. Per-user authentication and an audit log if the API ever leaves a workstation;
+   today it is an optional shared key behind a reverse proxy.
+5. CAL FIRE DINS structure-damage inspections as a damage target for the ML model.
