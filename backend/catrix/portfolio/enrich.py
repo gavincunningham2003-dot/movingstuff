@@ -271,7 +271,7 @@ def _enrich(session: Session, pf: Portfolio, job: ProcessingJob, *, allow_networ
     for p, r in zip(props, rows(df), strict=True):
         p.county_fips = r.county_fips if isinstance(r.county_fips, str) else None
         p.hazards = r.hazards
-        p.composite_score = r.composite_score
+        p.composite_score = _num(r.composite_score)
         p.financial = r.financial
     pf.analysis = summarise_portfolio(df, names)
     session.flush()

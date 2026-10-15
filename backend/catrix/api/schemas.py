@@ -474,6 +474,76 @@ class DataQualityOut(BaseModel):
     note: str
 
 
+# --------------------------------------------------------------------------- stress tests
+class StressEventSummaryOut(BaseModel):
+    event_id: int
+    fire_name: str | None
+    year: int | None
+    gis_acres: float | None
+    alarm_date: str | None
+    n_exposures_inside: int
+    n_exposures_within_buffer: int = 0
+    total_insured_value_inside: float | None
+    share_of_tiv_pct: float | None
+    centroid_lat: float | None
+    centroid_lon: float | None
+
+
+class StressCatalogueEventOut(BaseModel):
+    event_id: int
+    fire_name: str | None
+    year: int | None
+    gis_acres: float | None
+    alarm_date: str | None
+    centroid_lat: float | None
+    centroid_lon: float | None
+
+
+class StressTestListOut(BaseModel):
+    portfolio_id: str
+    buffer_m: float
+    n_exposures: int
+    total_insured_value: float | None
+    events: list[StressEventSummaryOut]
+    catalogue: list[StressCatalogueEventOut]
+    note: str
+
+
+class StressHitOut(BaseModel):
+    property_id: str
+    policy_id: str | None
+    row_number: int
+    lat: float
+    lon: float
+    county_fips: str | None
+    hit_kind: Literal["inside", "within_buffer"]
+    distance_m: float
+    insured_value: float | None
+    property_value: float | None
+    contents_value: float | None
+    exposed_value: float | None
+    exposed_value_basis: str
+    deductible: float | None
+    limit: float | None
+    gross_loss: float | None
+    net_insured_loss: float | None
+    composite_score: float | None
+    duplicate_kind: str | None
+
+
+class StressTestOut(BaseModel):
+    portfolio_id: str
+    event: dict[str, Any]
+    damage_ratio: float
+    buffer_m: float
+    generated_at: datetime
+    totals: dict[str, Any]
+    hits: list[StressHitOut]
+    perimeter: dict[str, Any] | None
+    assumptions: list[str]
+    caveats: list[str]
+
+
 class JobOut(BaseModel):
     job_id: str
     job_type: str

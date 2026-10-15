@@ -18,6 +18,9 @@ export const queryKeys = {
   propertyCounties: ['properties', 'counties'] as const,
   portfolios: ['portfolio', 'list'] as const,
   csvContract: ['portfolio', 'csv-contract'] as const,
+  stressTests: (id: string, bufferM: number) => ['portfolio', 'stress-tests', id, bufferM] as const,
+  stressTest: (id: string, eventId: number, ratio: number, bufferM: number) =>
+    ['portfolio', 'stress-test', id, eventId, ratio, bufferM] as const,
   portfolioStatus: (id: string) => ['portfolio', 'status', id] as const,
   portfolioAnalysis: (id: string) => ['portfolio', 'analysis', id] as const,
   dataSources: ['data-sources'] as const,
@@ -109,6 +112,25 @@ export function usePropertyCounties() {
     queryKey: queryKeys.propertyCounties,
     queryFn: ({ signal }) => api.propertyCounties(signal),
     staleTime: 10 * 60_000,
+  });
+}
+
+export function useStressTests(portfolioId: string | null, bufferM: number) {
+  return useQuery({
+    queryKey: queryKeys.stressTests(portfolioId ?? '', bufferM),
+    queryFn: ({ signal }) => api.stressTests(portfolioId as string, bufferM, signal),
+    enabled: !!portfolioId,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useStressTest(portfolioId: string | null, eventId: number | null, damageRatio: number, bufferM: number) {
+  return useQuery({
+    queryKey: queryKeys.stressTest(portfolioId ?? '', eventId ?? 0, damageRatio, bufferM),
+    queryFn: ({ signal }) => api.stressTest(portfolioId as string, eventId as number, damageRatio, bufferM, signal),
+    enabled: !!portfolioId && eventId != null,
+    placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
   });
 }
 

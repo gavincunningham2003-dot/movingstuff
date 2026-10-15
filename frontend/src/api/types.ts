@@ -353,6 +353,77 @@ export interface LocationAccumulationOut {
   composite_score: number | null;
 }
 
+// --------------------------------------------------------------------------- stress tests
+
+export interface StressEventSummaryOut {
+  event_id: number;
+  fire_name: string | null;
+  year: number | null;
+  gis_acres: number | null;
+  alarm_date: string | null;
+  n_exposures_inside: number;
+  n_exposures_within_buffer: number;
+  total_insured_value_inside: number | null;
+  share_of_tiv_pct: number | null;
+  centroid_lat: number | null;
+  centroid_lon: number | null;
+}
+
+export interface StressCatalogueEventOut {
+  event_id: number;
+  fire_name: string | null;
+  year: number | null;
+  gis_acres: number | null;
+  alarm_date: string | null;
+  centroid_lat: number | null;
+  centroid_lon: number | null;
+}
+
+export interface StressTestListOut {
+  portfolio_id: string;
+  buffer_m: number;
+  n_exposures: number;
+  total_insured_value: number | null;
+  events: StressEventSummaryOut[];
+  catalogue: StressCatalogueEventOut[];
+  note: string;
+}
+
+export interface StressHitOut {
+  property_id: string;
+  policy_id: string | null;
+  row_number: number;
+  lat: number;
+  lon: number;
+  county_fips: string | null;
+  hit_kind: 'inside' | 'within_buffer';
+  distance_m: number;
+  insured_value: number | null;
+  property_value: number | null;
+  contents_value: number | null;
+  exposed_value: number | null;
+  exposed_value_basis: string;
+  deductible: number | null;
+  limit: number | null;
+  gross_loss: number | null;
+  net_insured_loss: number | null;
+  composite_score: number | null;
+  duplicate_kind: string | null;
+}
+
+export interface StressTestOut {
+  portfolio_id: string;
+  event: Record<string, unknown> & { event_id: number; fire_name: string | null; year: number | null; gis_acres: number | null };
+  damage_ratio: number;
+  buffer_m: number;
+  generated_at: string;
+  totals: Record<string, unknown>;
+  hits: StressHitOut[];
+  perimeter: Record<string, unknown> | null;
+  assumptions: string[];
+  caveats: string[];
+}
+
 export interface PortfolioScenarioTotal {
   scenario_id: string;
   hazard_id: string;

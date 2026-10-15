@@ -526,6 +526,50 @@ Checks: `ruff`, `mypy catrix` (79 files) clean; `pytest tests/unit -q` **92 pass
 `test_portfolio_upload_roundtrip` was updated for the new counts (exact duplicate excluded,
 shared location kept) and is run in Stage E with the PostGIS test database.
 
+### Stage C — historical catastrophe stress tests (2026-10-14)
+
+Scope: items 8-10 of the improvement prompt. New module `catrix/portfolio/stress.py`,
+three endpoints, a frontend panel, unit and integration tests.
+
+**Backend.** One set-based PostGIS query per request: `portfolio_properties` (exact
+duplicates excluded) joined to `wildfire_events` with `ST_Intersects` on the GiST-indexed
+perimeter geometry, plus an optional `ST_DWithin` geography buffer (≤ 5 km) for near
+misses. `GET /portfolio/{id}/stress-tests` ranks every ingested perimeter that touches the
+portfolio by sum insured inside (with exposures inside, near misses, share of TIV, centroid)
+and appends a catalogue of 329 fires ≥ 10,000 acres since 2000 so a famous event can be
+replayed even when it misses. `GET /portfolio/{id}/stress-tests/{event_id}` returns the
+event, a simplified perimeter as GeoJSON, every hit (inside / within buffer, distance, sum
+insured, replacement value, exposed value and its basis, deductible, limit, gross, net) and
+totals: exposures inside, sum insured and replacement value inside, share of TIV, gross and
+net with the number of exposures with and without terms, and gross at ×0.5 / ×1.5 of the
+chosen damage ratio. `/export` streams the hits as CSV. The damage ratio is a required
+*assumption* (default 0.5, user-set): the perimeter is the burned area, not structure loss,
+and every response says so. Near-miss exposures are listed but never totalled. Requests on
+an incomplete portfolio get 409; unknown events 404.
+
+**Frontend.** "Historical stress tests" card on the portfolio page: event selector (fires that
+hit the book first, catalogue fires marked "misses"), near-miss buffer (0-5 km), damage-ratio
+input, ranked event table, five result tiles, a map with the perimeter overlay and hit
+locations (red inside, yellow near-miss, click for details), the ranked hit table, CSV
+export and the assumptions/caveats list.
+
+**Verification (real run, 2026-10-14 22:45, the 25-row example portfolio).** Seven ingested
+perimeters touch the book within 1 km; only the **Camp Fire (2018, 153,336 acres)** contains
+an exposure: P-0004 in Paradise, sum insured $380,000 (2.16 % of TIV), replacement value
+$525,000 → gross $262,500 at ratio 0.5, net $260,000 after the $2,500 deductible and the
+$380,000 sum-insured cap; sensitivity $131,250 / $393,750 at ratios 0.25 / 0.75. The Thomas
+(2017) and Medio (2020) fires come within 1 km of an exposure without containing one.
+
+Tests: `tests/unit/test_stress.py` (pure loss arithmetic, export rows, ratio range) and
+`test_portfolio_stress_test_replays_a_perimeter` in the PostGIS integration suite (a seeded
+2020 perimeter contains one of three exposures: 50 % of TIV, gross 500,000 / net 495,000,
+near miss listed with no loss, CSV export, 404 for an unknown event, 409 before completion).
+A first integration run failed on `could not determine data type of parameter` for the
+nullable `min_year`/`buffer_m` bind parameters (fixed with explicit casts), then on a NaN
+composite score reaching the JSON encoder (NaN is now treated as missing both when the
+enrichment writes scores and when the stress test reads them). Final run: integration
+**5 passed** (28 s), unit **97 passed**, `mypy` clean (80 files), frontend build succeeds.
+
 ## Completed functionality (code)
 
 - Typed configuration, structured logging, dataset registry with provenance.
@@ -543,7 +587,8 @@ shared location kept) and is run in Stage E with the PostGIS test database.
 - Portfolio: served CSV contract, optional ids, distinct money columns, malformed-vs-empty
   amounts, classified duplicates (exact / shared location / repeated id), background
   enrichment job, aggregation (county, 10 km concentration cells, location accumulation,
-  top exposures, separate money totals, scenario totals with sensitivity), CSV/JSON export.
+  top exposures, separate money totals, scenario totals with sensitivity), CSV/JSON export,
+  historical perimeter stress tests (ranked events, per-hit losses, perimeter GeoJSON, CSV).
 - ML: location-year dataset (DuckDB), leakage checks, chronological + spatial-block
   splits, baseline/LR/RF/XGBoost, chronological forward-chaining CV with a gap for tuning
   and selection, OOF calibration (none/isotonic/sigmoid by validation Brier), feature
@@ -572,6 +617,8 @@ Unit tests run without network (respx mocks) or database. Integration tests requ
 | 2026-10-14 | `pytest tests/unit -q` after Stage B (CSV contract, duplicate kinds, finance) | **92 passed** (162.2 s) |
 | 2026-10-14 | `mypy catrix` (Stage A and B) | clean, 79 files |
 | 2026-10-14 | `npm run build` (Stage A and B) | succeeds |
+| 2026-10-15 | `pytest tests/unit -q` after Stage C | **97 passed** |
+| 2026-10-15 | `pytest tests/integration -m integration` (PostGIS `catrix_test`) after Stage C | **5 passed** (28 s) |
 
 First run surfaced four failures, all fixed: a numpy `.astype("Int64")` call in the
 building matcher (code bug), and three test-data issues (synthetic ML table violated the

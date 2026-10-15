@@ -4,6 +4,8 @@ database that may be dropped and recreated (e.g. the docker-compose ``db`` servi
 
 from __future__ import annotations
 
+import uuid
+
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -287,3 +289,64 @@ def test_portfolio_upload_roundtrip(seeded, monkeypatch):
     assert wf["gross_loss"] == 800_000
     csv_out = client.get(f"/api/v1/portfolio/{pid}/export", params={"format": "csv"}).text
     assert "wildfire_fhsz__class" in csv_out.splitlines()[0] and "Very High" in csv_out
+
+
+def test_portfolio_stress_test_replays_a_perimeter(seeded, monkeypatch):
+    """A (seeded) 2020 perimeter covers the Berkeley point; the 1991 one covers nothing."""
+    monkeypatch.setenv("CATRIX_DATABASE_URL", integration_db_url())
+    from catrix.api.main import create_app
+    from catrix.config import get_settings
+    from catrix.portfolio.enrich import run_portfolio_job
+
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    csv = (
+        b"property_id,latitude,longitude,property_value,insured_value,deductible\n"
+        b"A,37.87,-122.27,1000000,1000000,5000\n"
+        b"B,37.80,-122.25,,500000,\n"
+        b"B2,37.80,-122.25,,500000,\n"
+    )
+    up = client.post(
+        "/api/v1/portfolio/upload",
+        files={"file": ("stress.csv", csv, "text/csv")},
+        data={"name": "stress"},
+    )
+    pid, jid = up.json()["portfolio_id"], up.json()["job_id"]
+    run_portfolio_job(seeded, uuid.UUID(jid), allow_network=False)
+    lst = client.get(f"/api/v1/portfolio/{pid}/stress-tests").json()
+    assert lst["n_exposures"] == 3 and lst["total_insured_value"] == 2_000_000
+    ev = next(e for e in lst["events"] if e["fire_name"] == "SYNTHETIC FIRE")
+    assert ev["n_exposures_inside"] == 1 and ev["total_insured_value_inside"] == 1_000_000
+    assert ev["share_of_tiv_pct"] == 50.0
+    # the 1991 perimeter contains the Oakland site: B (its exact duplicate is excluded) and B2
+    old = next(e for e in lst["events"] if e["fire_name"] == "OLD SYNTHETIC FIRE")
+    assert old["n_exposures_inside"] == 2 and old["total_insured_value_inside"] == 1_000_000
+    det = client.get(
+        f"/api/v1/portfolio/{pid}/stress-tests/{ev['event_id']}",
+        params={"damage_ratio": 0.5},
+    ).json()
+    t = det["totals"]
+    assert t["n_exposures_inside"] == 1 and t["share_of_tiv_pct"] == 50.0
+    # A: replacement value 1,000,000 x 0.5 = 500,000 gross; deductible 5,000; limit = sum insured
+    assert t["gross_loss"] == 500_000 and t["net_insured_loss"] == 495_000
+    assert [h["property_id"] for h in det["hits"]] == ["A"]
+    assert det["perimeter"]["type"] in ("Polygon", "MultiPolygon")
+    # replaying the old fire with a 5 km buffer: B and B2 inside, A ~4.4 km away as a near miss
+    det2 = client.get(
+        f"/api/v1/portfolio/{pid}/stress-tests/{old['event_id']}",
+        params={"damage_ratio": 0.5, "buffer_m": 5000},
+    ).json()
+    inside = [h for h in det2["hits"] if h["hit_kind"] == "inside"]
+    near = [h for h in det2["hits"] if h["hit_kind"] == "within_buffer"]
+    assert sorted(h["property_id"] for h in inside) == ["B", "B2"]
+    assert [h["property_id"] for h in near] == ["A"] and near[0]["gross_loss"] is None
+    assert 4_000 < near[0]["distance_m"] < 5_000
+    # sum insured used as proxy value and as the limit: 500,000 x 0.5 = 250,000 each
+    assert det2["totals"]["gross_loss"] == 500_000 and det2["totals"]["net_insured_loss"] == 500_000
+    assert det2["totals"]["n_with_terms"] == 2 and det2["totals"]["n_exposures_within_buffer"] == 1
+    csv_out = client.get(
+        f"/api/v1/portfolio/{pid}/stress-tests/{ev['event_id']}/export",
+        params={"damage_ratio": 0.5},
+    ).text
+    assert "fire_name" in csv_out.splitlines()[0] and "SYNTHETIC FIRE" in csv_out
+    assert client.get(f"/api/v1/portfolio/{pid}/stress-tests/999999").status_code == 404

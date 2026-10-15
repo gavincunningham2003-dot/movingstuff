@@ -1,5 +1,7 @@
 import type {
   CsvColumnContractOut,
+  StressTestListOut,
+  StressTestOut,
   CountyCountOut,
   DataQualityOut,
   DataSourceOut,
@@ -154,6 +156,16 @@ export const api = {
 
   csvContract: (signal?: AbortSignal) => get<CsvColumnContractOut[]>('/portfolio/csv-contract', undefined, signal),
 
+  stressTests: (id: string, bufferM: number, signal?: AbortSignal) =>
+    get<StressTestListOut>(`/portfolio/${encodeURIComponent(id)}/stress-tests`, { buffer_m: bufferM }, signal),
+
+  stressTest: (id: string, eventId: number, damageRatio: number, bufferM: number, signal?: AbortSignal) =>
+    get<StressTestOut>(
+      `/portfolio/${encodeURIComponent(id)}/stress-tests/${eventId}`,
+      { damage_ratio: damageRatio, buffer_m: bufferM },
+      signal,
+    ),
+
   portfolioStatus: (id: string, signal?: AbortSignal) =>
     get<PortfolioStatusOut>(`/portfolio/${encodeURIComponent(id)}`, undefined, signal),
 
@@ -177,6 +189,8 @@ export const apiLinks = {
   portfolioExport: (id: string, format: 'csv' | 'json') =>
     buildUrl(`/portfolio/${encodeURIComponent(id)}/export`, { format }),
   exampleCsv: () => buildUrl('/portfolio/example.csv'),
+  stressExport: (id: string, eventId: number, damageRatio: number, bufferM: number) =>
+    buildUrl(`/portfolio/${encodeURIComponent(id)}/stress-tests/${eventId}/export`, { damage_ratio: damageRatio, buffer_m: bufferM }),
   docs: () => `${API_BASE_URL}/api/docs`,
 };
 

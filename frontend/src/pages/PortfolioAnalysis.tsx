@@ -19,6 +19,7 @@ import type {
   ValidationIssue,
 } from '../api/types';
 import { HazardDistributionPanel } from '../components/charts/HazardDistributionPanel';
+import { StressTestPanel } from '../components/portfolio/StressTestPanel';
 import { PageBody } from '../components/layout/PageBody';
 import { DARK_BASEMAP } from '../components/map/basemap';
 import { expr, pointColorExpression, pointLegend } from '../components/map/expressions';
@@ -802,6 +803,8 @@ export function PortfolioAnalysis() {
                   emptyMessage="No two exposures share a location."
                 />
               </Card>
+
+              {portfolioId && <StressTestPanel portfolioId={portfolioId} />}
 
               <Card
                 title="Financial scenarios"

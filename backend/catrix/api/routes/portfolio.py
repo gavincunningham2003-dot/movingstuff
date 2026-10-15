@@ -16,6 +16,8 @@ from catrix.api.schemas import (
     PortfolioStatusOut,
     PortfolioSummaryOut,
     PortfolioUploadResponse,
+    StressTestListOut,
+    StressTestOut,
 )
 from catrix.config import get_settings
 from catrix.db.models import (
@@ -30,6 +32,15 @@ from catrix.db.session import session_scope
 from catrix.logging import get_logger
 from catrix.portfolio.enrich import claim_job, create_portfolio, run_portfolio_job
 from catrix.portfolio.export import export_rows, to_csv, to_json
+from catrix.portfolio.stress import (
+    DEFAULT_DAMAGE_RATIO,
+    MAX_BUFFER_M,
+    catalogue,
+    hits_to_rows,
+    list_events,
+    portfolio_totals,
+    run_stress_test,
+)
 from catrix.portfolio.validation import CSV_CONTRACT
 
 log = get_logger(__name__)
@@ -260,6 +271,94 @@ def portfolio_export(
         to_json(pf, rows),
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="catrix_portfolio_{pf.id}.json"'},
+    )
+
+
+# --------------------------------------------------------------------------- stress tests
+def _completed(db: DB, portfolio_id: str) -> Portfolio:
+    pf = _get(db, portfolio_id)
+    if pf.status != "completed":
+        raise HTTPException(
+            409, f"portfolio status is '{pf.status}'; stress tests need a completed analysis"
+        )
+    return pf
+
+
+@router.get("/{portfolio_id}/stress-tests", response_model=StressTestListOut)
+def stress_test_events(
+    portfolio_id: str,
+    db: DB,
+    buffer_m: float = Query(0.0, ge=0.0, le=MAX_BUFFER_M),
+    min_year: int | None = Query(None, ge=1900, le=2100),
+) -> StressTestListOut:
+    """Historical perimeters that touch this portfolio (ranked by sum insured inside) plus a
+    catalogue of large fires that can be replayed even if they miss it."""
+    pf = _completed(db, portfolio_id)
+    totals = portfolio_totals(db, str(pf.id))
+    events = list_events(db, str(pf.id), buffer_m=buffer_m, min_year=min_year)
+    return StressTestListOut(
+        portfolio_id=str(pf.id),
+        buffer_m=buffer_m,
+        n_exposures=totals["n_exposures"],
+        total_insured_value=totals["total_insured_value"],
+        events=[e.__dict__ for e in events],
+        catalogue=catalogue(db),
+        note=(
+            "Perimeters are CAL FIRE FRAP burned areas replayed on the uploaded exposures; "
+            "they say which locations the fire would have reached, not what it would have destroyed."
+        ),
+    )
+
+
+@router.get("/{portfolio_id}/stress-tests/{event_id}", response_model=StressTestOut)
+def stress_test_detail(
+    portfolio_id: str,
+    event_id: int,
+    db: DB,
+    damage_ratio: float = Query(DEFAULT_DAMAGE_RATIO, gt=0.0, le=1.0),
+    buffer_m: float = Query(0.0, ge=0.0, le=MAX_BUFFER_M),
+    geometry: bool = Query(True, description="Include the simplified perimeter as GeoJSON"),
+) -> StressTestOut:
+    pf = _completed(db, portfolio_id)
+    res = run_stress_test(
+        db,
+        str(pf.id),
+        event_id,
+        damage_ratio=damage_ratio,
+        buffer_m=buffer_m,
+        include_geometry=geometry,
+    )
+    if res is None:
+        raise HTTPException(404, f"wildfire event {event_id} not found")
+    return StressTestOut(**res.to_dict())
+
+
+@router.get("/{portfolio_id}/stress-tests/{event_id}/export")
+def stress_test_export(
+    portfolio_id: str,
+    event_id: int,
+    db: DB,
+    damage_ratio: float = Query(DEFAULT_DAMAGE_RATIO, gt=0.0, le=1.0),
+    buffer_m: float = Query(0.0, ge=0.0, le=MAX_BUFFER_M),
+) -> Response:
+    pf = _completed(db, portfolio_id)
+    res = run_stress_test(
+        db,
+        str(pf.id),
+        event_id,
+        damage_ratio=damage_ratio,
+        buffer_m=buffer_m,
+        include_geometry=False,
+    )
+    if res is None:
+        raise HTTPException(404, f"wildfire event {event_id} not found")
+    name = (res.event.get("fire_name") or f"event-{event_id}").lower().replace(" ", "-")
+    return PlainTextResponse(
+        to_csv(hits_to_rows(res)),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="catrix_stress_{pf.id}_{name}_{res.event.get("year")}.csv"'
+        },
     )
 
 
